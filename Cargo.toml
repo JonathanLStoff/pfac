@@ -1,0 +1,41 @@
+[package]
+name = "pfac"
+version = "0.8.0"
+edition = "2024"
+authors = ["Jonathan Stoff <JonathanLStoff@gmail.com>"]
+
+description = "Bundle a directory tree into a zip, then read one entry back out of it as a seekable stream — no temp directory, never the whole file in memory. Optional deflate and AES-256."
+license = "MIT"
+repository = "https://github.com/jonathanlstoff/pfac"
+readme = "README.md"
+
+keywords = ["zip", "archive", "bundle", "streaming", "assets"]
+
+# crates.io category *slugs*, which are lowercase and `::`-separated — not the
+# display names. An unrecognised one is rejected at upload with a 400, after
+# the crate has been packaged, so it is worth checking against
+# https://crates.io/category_slugs before adding one.
+categories = ["filesystem", "compression"]
+
+[dependencies]
+# The container. `deflate` for optional compression, `aes-crypto` for optional
+# passwords — AES-256 only; zip's legacy ZipCrypto is broken and is never
+# written here.
+zip = { version = "8", features = ["aes-crypto", "deflate"] }
+
+# Recursing the input directory, so subfolders come along at any depth.
+walkdir = "2.5.0"
+
+# The atomic rename-into-place `create_bundle` finishes with. The temporary has
+# to land on the same filesystem as its target for the rename to be atomic, so
+# it cannot just go in /tmp.
+tempfile = "3.27.0"
+
+# The error enum.
+thiserror = "2.0.19"
+
+[dev-dependencies]
+# Only to prove the claim in the docs: `EntryReader` feeds
+# `Connection::deserialize_read_exact` directly, so a bundled database opens
+# with no temp file. `serialize` is what provides it.
+rusqlite = { version = "0.40.2", features = ["bundled", "serialize"] }
