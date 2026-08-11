@@ -39,6 +39,10 @@ pfac = "0.8.0"
 Files are streamed in with `io::copy` and out through a byte window, so bundling
 or reading a 4 GB video costs a buffer, not 4 GB.
 
+One more, for the application that owns the extension rather than the bundle:
+`register_icon(&spec)` tells the desktop what to draw for `.pfac` — see
+[Registering an icon for your extension](#registering-an-icon-for-your-extension).
+
 ## Compression and streaming are exclusive
 
 `stream` refuses a deflated entry with `Error::Compressed`.
@@ -50,15 +54,21 @@ re-inflating from the beginning, and a `Seek` impl that quietly did that would b
 a performance trap rather than a feature.
 
 Since the libraries this exists to feed both want to seek, the useful bundle is
-an uncompressed one. Media is already compressed, so `compress: false` usually
-costs almost nothing in size:
+usually an uncompressed one — and for already-compressed media that costs little:
 
 ```text
-200 KB of incompressible audio  →  201 KB bundle stored, 201 KB deflated
+200 KB of incompressible audio  →  201 KB stored, 201 KB deflated
 ```
 
-Use `compress: true` for text, logs, or anything else that actually shrinks, and
-reach for `read` on those entries.
+But measure rather than assume. `make example-all` bundles `tests/data`, whose
+FLACs are synthetic tones and so still hugely redundant:
+
+```text
+233 KB of synthetic-tone FLAC   →  234 KB stored,  35 KB deflated
+```
+
+Real recordings sit much nearer the first case than the second. Compress when the
+data actually shrinks and you can live with `read`; store when you want to seek.
 
 ## Feeding rusqlite
 
@@ -112,6 +122,61 @@ Two things worth knowing before relying on it:
   interrupted run leaves any previous bundle intact.
 - Symlinks are not followed and not stored: a link is a reference to one machine,
   and a bundle is meant to travel.
+
+## Registering an icon for your extension
+
+Part of the library, not a side script: `pfac::register_icon` (the `pfac::icon`
+module in full) tells the desktop what to draw for a file extension, picking the
+right mechanism per platform:
+
+| Platform | Icon format | Where the association goes |
+| --- | --- | --- |
+| Windows | `.ico` | `HKCU\Software\Classes` — no admin rights |
+| Linux | `.png` or `.svg` | freedesktop MIME database + hicolor icon theme |
+| macOS | `.icns` | an application bundle's `Info.plist`, then `lsregister` |
+
+Note the formats differ — **`.ico` is Windows-only**, and handing one to the
+others is `Error::IconFormat` rather than a silent no-op.
+`icon::required_icon_extensions()` answers at runtime, and `pfac::icon_in` goes
+one better: point it at a directory holding one icon per desktop and it hands
+back the one *this* machine can draw, so no caller needs a `cfg!` of its own.
+
+Because this writes to the user's system, it comes apart into a plan and an
+apply. `plan` computes every key, file, and command and touches nothing:
+
+```rust
+use pfac::{FileTypeIcon, icon_in};
+use pfac::icon::{plan, apply};
+
+// tests/data ships pfac.ico, pfac.icns, and pfac.png side by side.
+let icon = icon_in("tests/data")?;
+
+let spec = FileTypeIcon::new("pfac", icon, "com.myapp.bundle")
+    .description("MyApp Bundle");
+
+let steps = plan(&spec)?;
+println!("{steps}");   // itemised; nothing has happened yet
+apply(&steps)?;
+```
+
+`register_icon` is the two together, and `unregister_icon` undoes it. Everything
+is per-user, so none of it needs elevation. `make icon` prints the plan for this
+machine — using the `tests/data` icon for whichever desktop it is run on — and
+`make icon APPLY=1` carries it out. `EXT=`, `ICON=`, `APP_ID=`, and
+`APP_BUNDLE=` override the defaults.
+
+**The app id is an argument, not a default.** It is what the association is
+filed under — a ProgID on Windows, the MIME package file name on Linux — so it
+only has to be unique, and reverse-DNS is the convention. Deriving it from the
+extension would mean two applications that both handle `.pfac` writing the same
+key: the second would silently take over the first's icon, and `unregister_icon`
+would delete an association it never wrote.
+
+**macOS needs an application bundle.** Windows and Linux let a bare process
+claim an extension; macOS takes document icons from an app bundle's
+`Info.plist`, and there is no per-extension icon API to call. So
+`FileTypeIcon::app_bundle` is required there, and without it `plan` fails with
+`Error::Unsupported` explaining why rather than pretending.
 
 ## What this crate does not do
 

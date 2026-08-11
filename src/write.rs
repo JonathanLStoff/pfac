@@ -2,7 +2,7 @@
 
 use std::fs::File;
 use std::io::{self, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tempfile::NamedTempFile;
 use walkdir::WalkDir;
@@ -105,6 +105,40 @@ impl BundleOptions {
     }
 }
 
+/// The extension this crate suggests, without requiring it.
+///
+/// A convention and nothing more — see [`create_bundle`] on why no code here
+/// looks at it.
+pub const DEFAULT_EXTENSION: &str = "pfac";
+
+/// Adds [`DEFAULT_EXTENSION`] to a path that has no extension at all.
+///
+/// A convenience for a caller who wants the convention applied — `create_bundle`
+/// itself writes exactly the path it is given, since silently saving to a
+/// different filename than the one asked for would be the worse surprise.
+///
+/// A path that already has an extension is returned untouched, whatever that
+/// extension is.
+///
+/// ```
+/// use std::path::Path;
+/// use pfac::with_default_extension;
+///
+/// assert_eq!(with_default_extension("assets"), Path::new("assets.pfac"));
+///
+/// // Anything already extended is left alone.
+/// assert_eq!(with_default_extension("assets.zip"), Path::new("assets.zip"));
+/// assert_eq!(with_default_extension("v1.2/assets.bundle"), Path::new("v1.2/assets.bundle"));
+/// ```
+pub fn with_default_extension(path: impl Into<PathBuf>) -> PathBuf {
+    let path = path.into();
+
+    match path.extension() {
+        Some(_) => path,
+        None => path.with_extension(DEFAULT_EXTENSION),
+    }
+}
+
 /// Bundles `input_dir` into a zip at `output_file`.
 ///
 /// Subfolders come along at any depth, named `/`-separated relative to
@@ -118,9 +152,24 @@ impl BundleOptions {
 /// interrupted run leaves any previous bundle exactly as it was rather than a
 /// truncated file where it used to be.
 ///
+/// # The extension is yours
+///
+/// `output_file` is written exactly as given. Nothing in this crate inspects a
+/// file's name: [`Bundle::open`](crate::Bundle::open) identifies a bundle by
+/// reading zip's own central directory, so `.pfac`, `.zip`, `.bundle`,
+/// `.myapp-project`, or no extension at all are all equally valid, and renaming
+/// one afterwards does not stop it opening.
+///
+/// [`DEFAULT_EXTENSION`] is `pfac` as a convention, and
+/// [`with_default_extension`] applies it for callers who want it.
+///
 /// ```no_run
 /// // Uncompressed, so every entry can be streamed back out.
 /// pfac::create_bundle("./assets".as_ref(), "assets.pfac".as_ref(), false, None)?;
+///
+/// // Any other extension does the same thing.
+/// pfac::create_bundle("./assets".as_ref(), "assets.zip".as_ref(), false, None)?;
+/// pfac::create_bundle("./assets".as_ref(), "level-01.myapp".as_ref(), false, None)?;
 ///
 /// // Compressed and encrypted. Entries will need `read`, not `stream`.
 /// pfac::create_bundle("./docs".as_ref(), "docs.pfac".as_ref(), true, Some("hunter2"))?;

@@ -1,4 +1,4 @@
-//! Bundle a directory tree into a zip, then read one entry back out of it as a
+//! Bundle a directory tree into a 'zip' with a custom extension, then read one entry back out of it as a
 //! seekable stream — no temporary directory, and never the whole file in memory.
 //!
 //! ```text
@@ -50,8 +50,11 @@
 //! quietly did that would be a performance trap rather than a feature.
 //!
 //! Since both libraries this exists to feed want to seek, the useful bundle is
-//! an uncompressed one. Media is already compressed anyway, so `compress: false`
-//! usually costs almost nothing in size.
+//! usually an uncompressed one — and for already-compressed media that costs
+//! little. Measure rather than assume, though: `make example-all` bundles
+//! `tests/data`, whose FLACs are synthetic tones and still deflate more than
+//! sixfold. Compress when the data actually shrinks and you can live with
+//! [`Bundle::read`]; store when you want to seek.
 //!
 //! # Feeding rusqlite
 //!
@@ -80,6 +83,39 @@
 //! [`BufReader`](std::io::BufReader) — decoders read in small chunks, and the
 //! reader issues a syscall per read.
 //!
+//! # Telling the desktop about your extension
+//!
+//! [`register_icon`] registers a file-type icon with the OS, picking the right
+//! mechanism per platform: the registry on Windows, the freedesktop MIME
+//! database on Linux, an application bundle's `Info.plist` on macOS. Because it
+//! writes to the user's system, it splits in two — [`icon::plan`] works out
+//! every key, file, and command involved and touches nothing; [`icon::apply`]
+//! carries it out, and [`register_icon`] is the two together.
+//!
+//! The icon formats differ too — `.ico` is Windows-only — so keep one of each
+//! side by side and let [`icon_in`] pick the one this machine can draw:
+//!
+//! ```no_run
+//! use pfac::{FileTypeIcon, icon, icon_in};
+//!
+//! // tests/data holds pfac.ico, pfac.icns, and pfac.png; this takes the one
+//! // that belongs to the desktop it is running on.
+//! let icon_file = icon_in("tests/data")?;
+//!
+//! let spec = FileTypeIcon::new("pfac", icon_file, "com.myapp.bundle")
+//!     .description("MyApp Bundle");
+//!
+//! println!("{}", icon::plan(&spec)?);   // inspect before committing to it
+//! pfac::register_icon(&spec)?;          // plan and apply
+//! # Ok::<(), pfac::Error>(())
+//! ```
+//!
+//! `app_id` is an argument rather than a default because it is what the
+//! association is filed under: two applications claiming `.pfac` under the same
+//! key would overwrite each other. The [`icon`] module has the rest —
+//! [`icon::unregister`], [`icon::required_icon_extensions`], and the
+//! [`Plan`](icon::Plan) type.
+//!
 //! # What this crate does not do
 //!
 //! No workspace, no metadata database, no dirty tracking. A bundle is a zip and
@@ -89,15 +125,19 @@
 
 mod entry;
 mod error;
+pub mod icon;
 mod names;
 mod read;
 mod write;
 
 pub use entry::EntryReader;
 pub use error::{Error, Result};
+pub use icon::{FileTypeIcon, icon_in, register as register_icon, unregister as unregister_icon};
 pub use names::normalize as normalize_name;
 pub use read::{Bundle, DEFAULT_MAX_READ, EntryInfo};
-pub use write::{BundleOptions, create_bundle, create_bundle_with};
+pub use write::{
+    BundleOptions, DEFAULT_EXTENSION, create_bundle, create_bundle_with, with_default_extension,
+};
 
 #[cfg(test)]
 mod assertions {

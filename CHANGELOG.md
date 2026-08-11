@@ -8,6 +8,79 @@ underneath it, so **Done** always holds exactly what is unreleased.
 
 **Done**
 
+- Icon registration is part of the crate's own surface, not just a submodule:
+  `pfac::register_icon`, `pfac::unregister_icon`, `pfac::FileTypeIcon`, and
+  `pfac::icon_in` are re-exported at the root, and the crate docs and the README
+  carry the whole story rather than a pointer to it
+- `icon_in(directory)` picks the icon a directory holds for *this* desktop, in
+  the preference order of `required_icon_extensions()` — `.ico` on Windows,
+  `.icns` on macOS, `.svg` before `.png` elsewhere. An application ships one
+  icon per desktop side by side and stops writing a `cfg!` at every call site;
+  `tests/data` is exactly such a directory (`pfac.ico`, `pfac.icns`, `pfac.png`)
+  and is what `make icon` now registers from by default, whichever machine it
+  runs on. A directory with nothing usable in it is an `Error::Io` naming the
+  formats that would have worked
+- **Breaking:** `app_id` is an argument to `FileTypeIcon::new` rather than a
+  builder default. It was derived as `pfac.<extension>`, so two applications
+  handling the same extension wrote the same registry key or MIME package: the
+  second silently took over the first's icon, and `unregister` deleted an
+  association it had not written. The builder method is gone and `app_id()` is
+  now the getter. `FileTypeIcon::new("pfac", icon)` becomes
+  `FileTypeIcon::new("pfac", icon, "com.myapp.bundle")`
+- `make icon` takes `APP_ID=` alongside `EXT=`, `ICON=`, and `APP_BUNDLE=`, and
+  depends on `require-data` since the fixtures are now what it defaults to
+- `pfac::icon` registers a file-type icon with the desktop, switching mechanism
+  by platform: `HKCU\Software\Classes` plus `SHChangeNotify` on Windows, a
+  freedesktop MIME package and hicolor icon plus `update-mime-database` on
+  Linux, and `CFBundleDocumentTypes` in an application bundle's `Info.plist`
+  plus `lsregister` on macOS. Everything is per user; nothing needs elevation
+- Split into `plan` and `apply` rather than one function that just does it.
+  Registering edits the registry or the MIME database, so `plan` computes every
+  key, file, and command and touches nothing, `apply` carries it out, and
+  `register` is the two together. A `Plan` prints itemised, which also makes the
+  logic testable without a machine to modify — and `make icon` shows the plan for
+  the current host while `make icon APPLY=1` runs it
+- The icon format is enforced per platform. **`.ico` is Windows-only**; macOS
+  reads `.icns` and the freedesktop desktops read `.png` or `.svg`, so handing
+  over the wrong one is `Error::IconFormat` rather than a registration that
+  silently never draws. `required_icon_extensions()` answers at runtime
+- macOS cannot register a bare extension at all: Launch Services takes document
+  icons from an application bundle, and there is no per-extension icon API. So
+  `FileTypeIcon::app_bundle` is required there and `plan` fails with
+  `Error::Unsupported` naming the alternative, rather than reporting success for
+  something that did nothing
+- Compile-checked and clippy-clean for `x86_64-pc-windows-msvc`,
+  `x86_64-unknown-linux-gnu`, and `aarch64-apple-darwin`. Cross-checking caught a
+  real bug: `SHCNE_ASSOCCHANGED` is `u32` while `SHChangeNotify` takes `i32`.
+  The PlistBuddy sequence was verified by running it against a scratch bundle and
+  linting the result with `plutil`
+- New error variants: `IconFormat`, `Unsupported`, `Shell`
+- The Windows registry crates are declared under `[target."cfg(windows)"]`, so a
+  macOS or Linux build resolves neither them nor their `windows-sys` tree
+- `zip` is now `default-features = false`. Its defaults pull bzip2, zstd, lzma,
+  ppmd, and xz — the first two building C libraries from source — and this crate
+  only ever writes Stored or Deflated. The tree is pure Rust again, and
+  cross-compiling stopped needing a C toolchain for a decoder nothing uses. The
+  trade: a zip made elsewhere with one of those methods now fails to read with a
+  clear "unsupported compression"
+- `examples/bundle_dir.rs`, run by `make example`: bundles `./tests/data`, lists
+  what went in, streams a FLAC out of the bundle with a seek to the middle and
+  to the end, holds two streams open at once, and reads the smallest entry
+  whole — without extracting anything. `make example-all` runs the same data
+  three ways (stored, deflated, AES-256) so the differences are side by side
+- **The extension is explicitly the caller's.** Nothing in the crate reads a
+  file's name — a bundle is identified by zip's own central directory — so
+  `.pfac`, `.zip`, `.bundle`, `.myapp-project` and no extension at all are
+  equally valid, and renaming a bundle afterwards does not stop it opening.
+  `DEFAULT_EXTENSION` is `pfac` as a convention and `with_default_extension`
+  applies it to a path that has none, since `create_bundle` writes exactly the
+  path it is given rather than silently saving somewhere else.
+  `tests/extension.rs` round-trips eight spellings including `assets.tar.gz`,
+  a rename, and a bundle in a dotted directory
+- Corrected a claim in the README and the crate docs: "media is already
+  compressed, so storing costs almost nothing" is only sometimes true. The
+  fixtures in `tests/data` are synthetic tones, and deflate takes them from
+  234 KB to 35 KB — so the docs now give both numbers and say to measure
 - **Scope change: pfac is now a zip bundling library and nothing else.** Three
   functions — `create_bundle`, `Bundle::stream`, `Bundle::read` — plus the
   listing and safety around them. Everything below this entry describes the
@@ -55,7 +128,7 @@ underneath it, so **Done** always holds exactly what is unreleased.
   `tempfile`, `thiserror`. Dropped `tar`, `zstd`, `blake3`, `directories`,
   `serde_json`, and `rusqlite` — the last of which returns as a dev-dependency
   only, to execute the docs' claim rather than assert it
-- 45 tests. `tests/sqlite.rs` bundles a real SQLite database and opens it through
+- 53 tests. `tests/sqlite.rs` bundles a real SQLite database and opens it through
   `deserialize_read_exact`, which takes a `Read` and a length — both of which
   `EntryReader` has — so the bytes go from the bundle into SQLite's own buffer
   with no temp file and no second copy

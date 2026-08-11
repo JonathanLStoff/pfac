@@ -103,6 +103,36 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// The icon is not a format this platform's desktop reads.
+    ///
+    /// `.ico` is Windows-only; macOS wants `.icns` and the freedesktop desktops
+    /// want `.png` or `.svg`. See
+    /// [`required_icon_extensions`](crate::icon::required_icon_extensions).
+    #[error("{path} is not a usable icon here: this platform reads {expected}")]
+    IconFormat {
+        /// The icon as it was supplied.
+        path: PathBuf,
+        /// What this platform would have accepted.
+        expected: String,
+    },
+
+    /// This platform, or this configuration, cannot express what was asked.
+    #[error("{reason}")]
+    Unsupported {
+        /// What cannot be done, and what to do instead.
+        reason: String,
+    },
+
+    /// A desktop-integration step failed: a registry write, or a system command.
+    #[error("{step}: {reason}")]
+    Shell {
+        /// The step that failed, as it would appear in a
+        /// [`Plan`](crate::icon::Plan).
+        step: String,
+        /// What went wrong.
+        reason: String,
+    },
+
     /// Trouble from the zip layer: a malformed archive, an unsupported feature.
     #[error("{path}: {source}")]
     Zip {

@@ -21,7 +21,14 @@ categories = ["filesystem", "compression"]
 # The container. `deflate` for optional compression, `aes-crypto` for optional
 # passwords — AES-256 only; zip's legacy ZipCrypto is broken and is never
 # written here.
-zip = { version = "8", features = ["aes-crypto", "deflate"] }
+#
+# `default-features = false` matters: zip's defaults pull bzip2, zstd, lzma,
+# ppmd, and xz, and the first two build C libraries from source. This crate only
+# ever writes Stored or Deflated, so those decoders buy nothing and cost every
+# downstream build a C toolchain. The trade is that a zip made elsewhere with
+# one of those methods will not read — it fails with a clear "unsupported
+# compression" rather than silently.
+zip = { version = "8", default-features = false, features = ["aes-crypto", "deflate"] }
 
 # Recursing the input directory, so subfolders come along at any depth.
 walkdir = "2.5.0"
@@ -39,3 +46,7 @@ thiserror = "2.0.19"
 # `Connection::deserialize_read_exact` directly, so a bundled database opens
 # with no temp file. `serialize` is what provides it.
 rusqlite = { version = "0.40.2", features = ["bundled", "serialize"] }
+
+[target."cfg(windows)".dependencies]
+windows-registry = "0.6"
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_Foundation"] }

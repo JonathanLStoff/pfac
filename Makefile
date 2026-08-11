@@ -8,6 +8,26 @@
 # one each, so a target can carry the fixture or feature its example needs.
 
 CARGO ?= cargo
+# Where `make example` writes. Any extension works; with none, the example
+# applies the crate's default (.pfac) through `with_default_extension`.
+#   make example OUT=target/data.zip
+OUT ?=
+# Deflate the example bundle. Entries then need `read` rather than `stream`.
+COMPRESS ?=
+# Encrypt the example bundle with AES-256.
+PASSWORD ?=
+# `make icon` prints what registering an icon would do and stops. Set APPLY=1 to
+# carry it out — it writes to the registry (Windows) or the MIME database
+# (Linux), per user, no administrator rights needed.
+APPLY ?=
+EXT ?=
+# The icon to register. With none, the example takes whichever of
+# tests/data/pfac.{ico,icns,png} this desktop reads.
+ICON ?=
+# What the association is filed under: a ProgID on Windows, the MIME package
+# name on Linux. Only has to be unique.
+APP_ID ?=
+APP_BUNDLE ?=
 # The version to cut: make release v=0.9.0
 v ?=
 
@@ -17,8 +37,8 @@ v ?=
 PROFILE ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help build test check fmt clippy doc clean release \
-        require-cargo require-manifest require-version
+.PHONY: help build test check fmt clippy doc clean release example example-all icon \
+        require-cargo require-manifest require-version require-data
 
 # --- checks ---------------------------------------------------------------
 # Each is a guard the real targets depend on. They fail with a sentence saying
@@ -33,6 +53,12 @@ require-cargo:
 require-manifest: require-cargo
 	@$(CARGO) metadata --no-deps --format-version 1 >/dev/null 2>&1 || { \
 		echo "error: Cargo.toml does not parse. Run '$(CARGO) metadata' to see why."; \
+		exit 1; }
+
+# The example bundles this directory; without it there is nothing to show.
+require-data:
+	@test -d tests/data || { \
+		echo "error: tests/data is missing — the example bundles it."; \
 		exit 1; }
 
 # `v` is the whole input to `make release`, so it is checked before anything is
@@ -66,6 +92,27 @@ require-version:
 		3) echo "error: nothing under '**Done**' in CHANGELOG.md — no release to cut."; exit 1 ;; \
 		*) echo "error: could not read CHANGELOG.md"; exit 1 ;; \
 	esac
+
+# --- examples -------------------------------------------------------------
+
+## example: bundle ./tests/data and read it back (make example OUT=target/x.zip)
+example: require-manifest require-data
+	$(CARGO) run $(PROFILE) --example bundle_dir -- $(OUT)
+
+## example-all: the same data as stored, deflated, and encrypted, side by side
+example-all: require-manifest require-data
+	@echo "==> stored (streamable), default .pfac extension"
+	@$(CARGO) run $(PROFILE) --quiet --example bundle_dir -- target/example/stored
+	@echo ""
+	@echo '==> deflated (.zip) — smaller, but `stream` refuses the entries'
+	@COMPRESS=1 $(CARGO) run $(PROFILE) --quiet --example bundle_dir -- target/example/deflated.zip
+	@echo ""
+	@echo '==> AES-256 (.bundle) — any extension, entries need `read`'
+	@PASSWORD=hunter2 $(CARGO) run $(PROFILE) --quiet --example bundle_dir -- target/example/secret.bundle
+
+## icon: show what registering a file-type icon would do (APPLY=1 to do it)
+icon: require-manifest require-data
+	$(CARGO) run $(PROFILE) --example register_icon
 
 # --- build and test -------------------------------------------------------
 
@@ -170,3 +217,14 @@ help:
 	@echo ""
 	@echo "  A library: bundle a directory into a zip, then stream one entry"
 	@echo "  back out of it. See planning/TODO.md for what is left."
+	@echo ""
+	@echo "  'make example' bundles ./tests/data. The extension is yours —"
+	@echo "  .pfac is only what you get by not choosing:"
+	@echo "    make example OUT=target/data.zip"
+	@echo "    make example OUT=mybundle COMPRESS=1"
+	@echo "    make example PASSWORD=hunter2"
+	@echo ""
+	@echo "  'make icon' prints what registering an icon for an extension would"
+	@echo "  write, and changes nothing. 'make icon APPLY=1' carries it out."
+	@echo "  It registers whichever of tests/data/pfac.{ico,icns,png} this"
+	@echo "  desktop reads; ICON=, EXT=, APP_ID=, and APP_BUNDLE= override."

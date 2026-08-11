@@ -12,7 +12,8 @@ seekable stream — no temp directory, and never the whole file in memory.
                        stream("music/take.flac") ──▶ Read + Seek + Send
 ```
 
-**Scope.** Three functions and the safety around them. Everything the crate used
+**Scope.** Three functions, the safety around them, and desktop icon
+registration (section 9). Everything the crate used
 to be — workspace directories, a SQLite metadata store, locking, collation, a
 CLI — was removed on purpose; see `CHANGELOG.md`. Do not add it back without a
 reason that is about *this* crate.
@@ -22,7 +23,7 @@ reason that is about *this* crate.
 ## Where things stand
 
 **Done:** see `CHANGELOG.md`. `create_bundle`, `Bundle::stream`, and
-`Bundle::read` all work, with 45 tests over them. The rusqlite claim in the docs
+`Bundle::read` all work, with 53 tests over them. The rusqlite claim in the docs
 is executed in `tests/sqlite.rs` rather than asserted.
 
 **In Progress:**
@@ -35,6 +36,8 @@ is executed in `tests/sqlite.rs` rather than asserted.
 ## 0. Foundation
 
 - [x] Library, no binary
+- [x] `examples/bundle_dir.rs` over `tests/data`, with `make example` and
+      `make example-all`
 - [x] `Cargo.toml`: `description`, `keywords`, `categories`, and a dependency
       list that is only what the three functions need
 - [x] `README.md` describing what exists
@@ -55,6 +58,8 @@ is executed in `tests/sqlite.rs` rather than asserted.
 - [x] Entries streamed in with `io::copy` behind a `BufReader`
 - [x] Atomic: built beside the destination, flushed, fsynced, renamed
 - [x] uid/gid normalised, symlinks skipped
+- [x] The extension is the caller's: nothing reads a file name, `DEFAULT_EXTENSION`
+      is a convention, `with_default_extension` applies it on request
 - [ ] **Per-entry compression override.** Today `compress` is all-or-nothing, so
       turning it on makes *every* entry unstreamable — including a database or a
       FLAC that wanted to stay Stored. Wanted: a predicate or an extension table,
@@ -146,8 +151,8 @@ is executed in `tests/sqlite.rs` rather than asserted.
 
 ## 7. Testing
 
-45 tests: 14 unit, 23 integration in `tests/bundle.rs`, 3 in `tests/sqlite.rs`,
-plus doctests.
+72 tests: 29 unit, 23 in `tests/bundle.rs`, 7 in `tests/extension.rs`, 3 in
+`tests/sqlite.rs`, plus 10 doctests.
 
 - [x] Round trip across compressed/uncompressed × encrypted/plain, with
       subfolders and an empty directory
@@ -164,17 +169,66 @@ plus doctests.
 - [x] Entry names are readable without the password — asserted so that if it ever
       stops being true, the docs get revisited
 - [x] A real SQLite database, bundled and opened through the stream
+- [x] Any extension, no extension, a misleading extension, and a renamed bundle
+      all open (`tests/extension.rs`)
 - [ ] Hostile bundles built by hand: `../` names, absolute names, a symlink
       entry, a bomb, overlapping entries, a central directory that disagrees with
       a local header. The zip writer refuses to *produce* most of these, so the
       fixtures have to be assembled at the byte level
 - [ ] Memory ceiling: stream an entry larger than any sane buffer and assert peak
       allocation stays flat. Behind an env guard so CI does not carry it
-- [ ] A real FLAC fixture decoded through the stream with claxon or symphonia.
-      The trait bounds are asserted at compile time today, which is not the same
-      as a decoder actually seeking in one
+- [ ] A real FLAC fixture *decoded* through the stream with claxon or symphonia.
+      `tests/data` now holds three real FLACs and `make example` streams and
+      seeks in one, but nothing decodes them — the trait bounds are asserted at
+      compile time, which is not the same as a decoder seeking in one
+- [ ] `tests/data/my_database.db` is 0 bytes, so the example cannot show the
+      rusqlite path against it. Either populate it or point the example at the
+      database `tests/sqlite.rs` builds
 - [ ] Property test over random directory trees for the round trip
 - [ ] An entry over 4 GiB, once section 1 settles Zip64
+
+## 9. Desktop icon registration (`pfac::icon`)
+
+- [x] `plan` / `apply` split, so a system-modifying call can be inspected before
+      it runs and tested without touching a real machine
+- [x] Windows: `HKCU\Software\Classes` — extension → ProgID → `DefaultIcon`,
+      then `SHChangeNotify` so open windows redraw. Per user, no elevation
+- [x] Linux: freedesktop MIME package XML + hicolor icon, then
+      `update-mime-database` and an optional `gtk-update-icon-cache`
+- [x] macOS: `CFBundleDocumentTypes` in an app bundle's `Info.plist` via
+      PlistBuddy, then `lsregister`. Requires `app_bundle`; without one, `plan`
+      fails explaining that macOS has no per-extension icon API
+- [x] Per-platform icon format enforced (`ico` / `icns` / `png`+`svg`) rather
+      than silently accepting one that will never be drawn
+- [x] `icon_in(directory)` picks the icon a directory holds for the running
+      desktop, so an application ships one per platform and never writes a
+      `cfg!`. `tests/data` holds `pfac.ico` / `pfac.icns` / `pfac.png` and is
+      what `make icon` registers from by default
+- [x] `app_id` is an argument to `FileTypeIcon::new`, not derived from the
+      extension — two applications handling `.pfac` must not write the same key
+- [x] Re-exported at the crate root: `register_icon`, `unregister_icon`,
+      `FileTypeIcon`, `icon_in`, documented in the crate docs and the README
+- [x] `unregister` for Windows and Linux
+- [x] Compile-checked for `x86_64-pc-windows-msvc`,
+      `x86_64-unknown-linux-gnu`, and `aarch64-apple-darwin`, clippy clean on all
+      three — the Windows `SHChangeNotify` signature mismatch was caught this way
+- [ ] **Nothing is applied in tests, on any platform.** The unit tests cover
+      normalisation, format rejection, XML escaping, and plan shape; whether the
+      registry writes or `update-mime-database` succeeds is unproven. Needs a VM
+      or a container per platform
+- [ ] `unregister` on macOS is unimplemented — undoing means editing the
+      application's own `Info.plist` back, which is the caller's decision
+- [ ] The Linux plan installs one icon size (48×48 for PNG). A real theme wants
+      several, or an SVG
+- [ ] Windows: no `FriendlyTypeName`, no `shell\open\command`, so the icon
+      appears but double-clicking does nothing. Decide whether launching is in
+      scope
+- [ ] macOS: `UTExportedTypeDeclarations` is the modern spelling;
+      `CFBundleDocumentTypes` alone is enough for an icon but not for a UTI that
+      other apps can refer to
+- [ ] The PlistBuddy steps are `required: false`, so re-registering is
+      idempotent — but a genuine failure is also silent. Distinguish "already
+      there" from "could not write"
 
 ## 8. Later
 
@@ -184,4 +238,6 @@ plus doctests.
 - [ ] `Read + Seek` over a bundle held in memory or behind a network fetch,
       rather than only a `File`
 - [ ] Async reads
+- [ ] Icon registration for a running app that is not installed (portable
+      builds), where there is no stable path to point the association at
 - [ ] Repair: salvage what is readable from a damaged bundle
