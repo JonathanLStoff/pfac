@@ -94,6 +94,34 @@ asks for; `EntryReader::len` answers `byte_len`. claxon and anything else taking
 a `Read` work directly. Wrap it in a `BufReader` — decoders read in small chunks,
 and the reader issues a syscall per read.
 
+## Writing an export straight into a bundle
+
+`create_bundle` needs the files to exist first. For content that is *produced* —
+a FLAC encoder, a video muxer — `BundleWriter` hands out a writer instead:
+
+```rust
+use pfac::{BundleOptions, BundleWriter};
+
+let mut bundle = BundleWriter::create("project.pfac", &BundleOptions::stored())?;
+
+let mut entry = bundle.entry("music/take.flac")?;
+atome::export::to_flac_into("take.mp3", &mut entry)?;   // writes here, not to a path
+entry.finish()?;                                         // only now is it in the bundle
+
+bundle.finish()?;                                        // only now is the bundle on disk
+```
+
+An `EntryWriter` is `Write + Seek + Read`, because exporters go back and patch
+what they wrote — FLAC's header, WebM's sizes, MP4's index. A zip entry cannot:
+it is written once, forward. So the bytes go to an anonymous scratch file and
+are copied into the bundle by `finish`. That is a copy on disk, never a buffer
+the size of the export. An entry that is dropped rather than finished is
+discarded, so a failed export leaves nothing in the bundle; a name cannot be
+written twice.
+
+`make example-export` runs `examples/export_into_bundle.rs`, which writes two
+exports into a bundle and streams one back out of it.
+
 ## Passwords
 
 `Some(password)` encrypts entry contents with **AES-256**. zip's legacy ZipCrypto

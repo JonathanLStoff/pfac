@@ -75,6 +75,32 @@
 //! Needs rusqlite's `serialize` feature. The database is read-only in this form,
 //! and writes to it do not go back into the bundle.
 //!
+//! # Writing an export straight into a bundle
+//!
+//! [`create_bundle`] needs its files to exist already. For content that is
+//! produced — a FLAC encoder, a video muxer — [`BundleWriter::entry`] hands out
+//! an [`EntryWriter`] to write to instead, so no file is made first:
+//!
+//! ```no_run
+//! use pfac::{BundleOptions, BundleWriter};
+//! use std::io::Write;
+//!
+//! let mut bundle = BundleWriter::create("project.pfac", &BundleOptions::stored())?;
+//!
+//! let mut entry = bundle.entry("music/take.flac")?;
+//! entry.write_all(b"fLaC")?;   // or hand `&mut entry` to an exporter taking `Write + Seek`
+//! entry.finish()?;             // only now is it in the bundle
+//!
+//! bundle.finish()?;            // only now is the bundle on disk
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! The entry is [`Write`](std::io::Write) + [`Seek`](std::io::Seek) +
+//! [`Read`](std::io::Read) because exporters patch what they wrote — a header,
+//! an index — and a zip entry is written once, forward. The bytes are held in
+//! an anonymous scratch file until [`EntryWriter::finish`] copies them in. See
+//! `examples/export_into_bundle.rs`.
+//!
 //! # Feeding audio decoders
 //!
 //! [`EntryReader`] is `Read + Seek + Send`, which is what symphonia's
@@ -136,7 +162,8 @@ pub use icon::{FileTypeIcon, icon_in, register as register_icon, unregister as u
 pub use names::normalize as normalize_name;
 pub use read::{Bundle, DEFAULT_MAX_READ, EntryInfo};
 pub use write::{
-    BundleOptions, DEFAULT_EXTENSION, create_bundle, create_bundle_with, with_default_extension,
+    BundleOptions, BundleWriter, DEFAULT_EXTENSION, EntryWriter, create_bundle, create_bundle_with,
+    with_default_extension,
 };
 
 #[cfg(test)]

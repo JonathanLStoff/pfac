@@ -37,7 +37,7 @@ v ?=
 PROFILE ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help build test check fmt clippy doc clean release example example-all icon \
+.PHONY: help build test check fmt clippy doc clean release example example-all example-export icon \
         require-cargo require-manifest require-version require-data
 
 # --- checks ---------------------------------------------------------------
@@ -109,6 +109,10 @@ example-all: require-manifest require-data
 	@echo ""
 	@echo '==> AES-256 (.bundle) — any extension, entries need `read`'
 	@PASSWORD=hunter2 $(CARGO) run $(PROFILE) --quiet --example bundle_dir -- target/example/secret.bundle
+
+## example-export: write exports straight into bundle entries, then stream one back
+example-export: require-manifest
+	$(CARGO) run $(PROFILE) --example export_into_bundle -- $(OUT)
 
 ## icon: show what registering a file-type icon would do (APPLY=1 to do it)
 icon: require-manifest require-data
@@ -223,6 +227,9 @@ help:
 	@echo "    make example OUT=target/data.zip"
 	@echo "    make example OUT=mybundle COMPRESS=1"
 	@echo "    make example PASSWORD=hunter2"
+	@echo ""
+	@echo "  'make example-export' writes exports into a bundle through"
+	@echo "  BundleWriter, with no file written first, and streams one back."
 	@echo ""
 	@echo "  'make icon' prints what registering an icon for an extension would"
 	@echo "  write, and changes nothing. 'make icon APPLY=1' carries it out."

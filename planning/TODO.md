@@ -66,7 +66,15 @@ is executed in `tests/sqlite.rs` rather than asserted.
       so media stays stored while text is deflated
 - [ ] Progress callback and cancellation. Bundling tens of gigabytes should be
       interruptible and should be able to say how far along it is
-- [ ] Add to an existing bundle without rewriting it
+- [ ] Add to an existing bundle without rewriting it (also for `BundleWriter`,
+      which only creates)
+- [ ] **`EntryWriter` spools to a scratch file** so it can `Seek`. An exporter
+      that only ever writes forward (a raw PCM dump) pays a copy it does not
+      need; a forward-only `Write` entry that goes straight into the zip would
+      avoid it. Add one if something wants it
+- [ ] The real atome/vtome-into-bundle example lives in the README, not in
+      `examples/`: a path dev-dependency on `../atome` breaks CI's lone
+      checkout. Make it a real example once atome ships `to_flac_into`
 - [ ] Zip64 is off (`large_file(false)`), so a single entry over 4 GiB will fail.
       Decide: always on, or set per entry from the file's size. Per entry is
       better — Zip64 headers cost bytes and break older readers

@@ -8,6 +8,27 @@ underneath it, so **Done** always holds exactly what is unreleased.
 
 **Done**
 
+- **`BundleWriter`: write an export straight into a bundle entry.**
+  `BundleWriter::create(path, &options)` starts a bundle, `entry(name)` returns
+  an `EntryWriter` that is `Write + Seek + Read`, and `EntryWriter::finish`
+  lands it; `BundleWriter::finish` writes the index and renames into place,
+  exactly as `create_bundle` does (which now runs on it). An exporter that takes
+  a writer — atome's `to_flac_into`, vtome's `transcode_into` — writes into the
+  bundle with no file made first. `Seek` and `Read` are there because exporters
+  patch their headers and move their indexes, which a zip entry, written once
+  and forward, cannot; so the bytes spool to an anonymous scratch file and are
+  copied in on `finish`. Dropping an unfinished entry discards it, and a name
+  already written is refused when the entry is opened rather than after the
+  export. 9 tests in `tests/writer.rs`; `make example-export` runs
+  `examples/export_into_bundle.rs`, which has no atome or vtome dependency so
+  that CI's lone checkout still builds
+- (ad hoc, outside pfac) Fixed compile errors in OrbitX's
+  `src-tauri/src/project/mod.rs`: `&str` values concatenated with `+` (only
+  `String + &str` is valid) in `get_asset_project_stream`, replaced with
+  `format!`; a missing-paren typo on `project_name.clone)`; and use-after-move
+  errors in `create_project` where `project`, `tmp_assets`, `seed_db`, and
+  `out_path` were each consumed by `fs::copy` (or by binding `project` into
+  `input`) and then reused afterward — fixed by passing references instead
 - Icon registration is part of the crate's own surface, not just a submodule:
   `pfac::register_icon`, `pfac::unregister_icon`, `pfac::FileTypeIcon`, and
   `pfac::icon_in` are re-exported at the root, and the crate docs and the README
