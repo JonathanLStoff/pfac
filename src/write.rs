@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 use walkdir::WalkDir;
 use zip::write::{FileOptions, SimpleFileOptions};
-use zip::{AesMode, CompressionMethod, ZipWriter};
+use zip::{AesMode, CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::error::{Error, Result};
 use crate::names;
@@ -300,6 +300,9 @@ pub struct BundleWriter {
     /// Names already in the bundle, so a repeat fails when it is opened rather
     /// than after a four-gigabyte export has been spooled.
     written: HashSet<String>,
+    /// The bundle being updated, whose other entries are carried over at
+    /// [`finish`](BundleWriter::finish).
+    source: Option<PathBuf>,
 }
 
 impl BundleWriter {
@@ -310,7 +313,50 @@ impl BundleWriter {
     ///
     /// [`Error::Io`] if the directory cannot be made or written to.
     pub fn create(output_file: impl AsRef<Path>, options: &BundleOptions) -> Result<Self> {
-        let output_file = output_file.as_ref();
+        Self::start(output_file.as_ref(), options, None)
+    }
+
+    /// Starts an update of the existing bundle at `bundle`: entries written
+    /// here are added to it, or replace the entries of the same name, and every
+    /// other entry is carried over untouched.
+    ///
+    /// Carried over means copied as stored — compressed and encrypted entries
+    /// are not decompressed, decrypted, or recompressed, so the work is a copy
+    /// of the file and no more. It is still a rewrite: the bundle is built
+    /// beside the original and renamed over it by
+    /// [`finish`](BundleWriter::finish), so an interrupted update leaves the
+    /// original exactly as it was.
+    ///
+    /// `options` apply to the entries written *here*. Use the password the
+    /// bundle already has, or the bundle ends up with entries under two.
+    ///
+    /// ```no_run
+    /// use std::io::Write;
+    /// use pfac::{BundleOptions, BundleWriter};
+    ///
+    /// let mut bundle = BundleWriter::update("project.pfac", &BundleOptions::stored())?;
+    /// let mut entry = bundle.entry("core.planet")?;   // replaces the old one
+    /// entry.write_all(b"new contents")?;
+    /// entry.finish()?;
+    /// bundle.finish()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] if `bundle` cannot be read; the bundle itself is read at
+    /// [`finish`](BundleWriter::finish), where [`Error::Zip`] reports one that
+    /// is not a bundle.
+    pub fn update(bundle: impl AsRef<Path>, options: &BundleOptions) -> Result<Self> {
+        let bundle = bundle.as_ref();
+
+        // Failing here, not after an export has been spooled.
+        File::open(bundle).map_err(|error| Error::io(bundle, error))?;
+
+        Self::start(bundle, options, Some(bundle.to_path_buf()))
+    }
+
+    fn start(output_file: &Path, options: &BundleOptions, source: Option<PathBuf>) -> Result<Self> {
 
         // The temporary has to share a filesystem with the destination, or the
         // rename becomes a copy and a copy is not atomic.
@@ -327,6 +373,7 @@ impl BundleWriter {
             output: output_file.to_path_buf(),
             options: options.clone(),
             written: HashSet::new(),
+            source,
         })
     }
 
@@ -366,7 +413,29 @@ impl BundleWriter {
     ///
     /// [`Error::Zip`] if the archive cannot be finished, [`Error::Io`] if it
     /// cannot be flushed or moved.
-    pub fn finish(self) -> Result<()> {
+    pub fn finish(mut self) -> Result<()> {
+        if let Some(source) = &self.source {
+            let file = File::open(source).map_err(|error| Error::io(source, error))?;
+            let mut archive = ZipArchive::new(BufReader::new(file))
+                .map_err(|error| Error::zip(source, "", error))?;
+
+            for index in 0..archive.len() {
+                let entry = archive
+                    .by_index_raw(index)
+                    .map_err(|error| Error::zip(source, "", error))?;
+
+                // A directory is `name/`; an entry written here has no slash.
+                if self.written.contains(entry.name().trim_end_matches('/')) {
+                    continue;
+                }
+
+                let name = entry.name().to_string();
+                self.zip
+                    .raw_copy_file(entry)
+                    .map_err(|error| Error::zip(&self.output, &name, error))?;
+            }
+        }
+
         let output_file = self.output;
         let mut temp = self
             .zip

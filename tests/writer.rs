@@ -178,3 +178,89 @@ fn an_unfinished_bundle_leaves_nothing_where_it_was_going() {
 
     assert!(!archive.exists());
 }
+
+#[test]
+fn an_update_replaces_one_entry_and_carries_the_rest_over_untouched() {
+    let temp = TempDir::new().unwrap();
+    let archive = temp.path().join("out.pfac");
+    let options = BundleOptions::stored().with_password("hunter2");
+
+    let mut bundle = BundleWriter::create(&archive, &options).unwrap();
+    for (name, data) in [("keep.bin", blob(5_000)), ("core.planet", b"old".to_vec())] {
+        let mut entry = bundle.entry(name).unwrap();
+        entry.write_all(&data).unwrap();
+        entry.finish().unwrap();
+    }
+    bundle.finish().unwrap();
+
+    let mut bundle = BundleWriter::update(&archive, &options).unwrap();
+    let mut entry = bundle.entry("core.planet").unwrap();
+    entry.write_all(b"new and longer").unwrap();
+    entry.finish().unwrap();
+    let mut entry = bundle.entry("added.bin").unwrap();
+    entry.write_all(b"added").unwrap();
+    entry.finish().unwrap();
+    bundle.finish().unwrap();
+
+    let mut bundle = Bundle::open_with_password(&archive, "hunter2").unwrap();
+    let mut names: Vec<&str> = bundle.names().collect();
+    names.sort_unstable();
+    assert_eq!(names, ["added.bin", "core.planet", "keep.bin"], "no entry twice");
+
+    assert_eq!(bundle.read("core.planet").unwrap(), b"new and longer");
+    assert_eq!(bundle.read("added.bin").unwrap(), b"added");
+    assert_eq!(bundle.read("keep.bin").unwrap(), blob(5_000), "decrypted still, never re-encrypted");
+}
+
+#[test]
+fn an_unfinished_update_leaves_the_original_as_it_was() {
+    let temp = TempDir::new().unwrap();
+    let archive = temp.path().join("out.pfac");
+
+    let mut bundle = BundleWriter::create(&archive, &BundleOptions::stored()).unwrap();
+    let mut entry = bundle.entry("a.bin").unwrap();
+    entry.write_all(b"original").unwrap();
+    entry.finish().unwrap();
+    bundle.finish().unwrap();
+
+    let mut bundle = BundleWriter::update(&archive, &BundleOptions::stored()).unwrap();
+    let mut entry = bundle.entry("a.bin").unwrap();
+    entry.write_all(b"half an export").unwrap();
+    entry.finish().unwrap();
+    drop(bundle);
+
+    let mut bundle = Bundle::open(&archive).unwrap();
+    assert_eq!(bundle.read("a.bin").unwrap(), b"original");
+}
+
+#[test]
+fn updating_a_bundle_that_is_not_there_fails_at_once() {
+    let temp = TempDir::new().unwrap();
+    let missing = temp.path().join("nope.pfac");
+
+    assert!(matches!(
+        BundleWriter::update(&missing, &BundleOptions::stored()),
+        Err(Error::Io { .. })
+    ));
+}
+
+#[test]
+fn an_update_keeps_directories_and_compressed_entries() {
+    let temp = TempDir::new().unwrap();
+    let input = temp.path().join("input");
+    std::fs::create_dir_all(input.join("empty")).unwrap();
+    std::fs::write(input.join("text.txt"), "hello ".repeat(1000)).unwrap();
+    let archive = temp.path().join("out.pfac");
+    pfac::create_bundle(&input, &archive, true, None).unwrap();
+
+    let mut bundle = BundleWriter::update(&archive, &BundleOptions::compressed()).unwrap();
+    let mut entry = bundle.entry("new.txt").unwrap();
+    entry.write_all(b"new").unwrap();
+    entry.finish().unwrap();
+    bundle.finish().unwrap();
+
+    let mut bundle = Bundle::open(&archive).unwrap();
+    assert!(bundle.names().any(|name| name == "empty/"));
+    assert_eq!(bundle.read("text.txt").unwrap(), "hello ".repeat(1000).into_bytes());
+    assert_eq!(bundle.read("new.txt").unwrap(), b"new");
+}

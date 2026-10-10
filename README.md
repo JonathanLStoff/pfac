@@ -111,6 +111,11 @@ entry.finish()?;                                         // only now is it in th
 bundle.finish()?;                                        // only now is the bundle on disk
 ```
 
+`BundleWriter::update("project.pfac", &options)` does the same to an existing
+bundle: the entries you write are added, or replace the ones of that name, and
+the rest are carried over untouched (copied as stored — nothing is decrypted or
+recompressed), then the bundle is renamed into place.
+
 An `EntryWriter` is `Write + Seek + Read`, because exporters go back and patch
 what they wrote — FLAC's header, WebM's sizes, MP4's index. A zip entry cannot:
 it is written once, forward. So the bytes go to an anonymous scratch file and

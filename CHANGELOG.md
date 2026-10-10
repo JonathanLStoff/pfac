@@ -8,6 +8,15 @@ underneath it, so **Done** always holds exactly what is unreleased.
 
 **Done**
 
+- **`BundleWriter::update(bundle, &options)`: add to or replace entries in an
+  existing bundle.** Entries written through it are added, or replace the entry
+  of the same name; every other entry — directories, compressed, and encrypted
+  ones included — is carried over with `raw_copy_file`, so nothing is
+  decompressed, decrypted, or recompressed. It is still a rewrite of the file,
+  built beside the original and renamed over it, so an interrupted update leaves
+  the original as it was. Options apply to the entries written, so pass the
+  bundle's own password. Its motivating caller is OrbitX saving a SQLite image
+  back into `core.planet`. 4 tests in `tests/writer.rs`
 - **`BundleWriter`: write an export straight into a bundle entry.**
   `BundleWriter::create(path, &options)` starts a bundle, `entry(name)` returns
   an `EntryWriter` that is `Write + Seek + Read`, and `EntryWriter::finish`

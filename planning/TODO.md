@@ -66,8 +66,12 @@ is executed in `tests/sqlite.rs` rather than asserted.
       so media stays stored while text is deflated
 - [ ] Progress callback and cancellation. Bundling tens of gigabytes should be
       interruptible and should be able to say how far along it is
-- [ ] Add to an existing bundle without rewriting it (also for `BundleWriter`,
-      which only creates)
+- [x] `BundleWriter::update` adds or replaces entries in an existing bundle by
+      raw-copying the rest, atomically
+- [ ] Add to an existing bundle without rewriting it at all — `update` is a copy
+      of the file, cheap per byte but linear in the bundle's size. Needs zip's
+      append mode (`ZipWriter::new_append`), which cannot replace an entry, only
+      add one
 - [ ] **`EntryWriter` spools to a scratch file** so it can `Seek`. An exporter
       that only ever writes forward (a raw PCM dump) pays a copy it does not
       need; a forward-only `Write` entry that goes straight into the zip would
