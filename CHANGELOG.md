@@ -8,6 +8,18 @@ underneath it, so **Done** always holds exactly what is unreleased.
 
 **Done**
 
+- **`BundleWriter::remove(name)`: delete an entry from a bundle being updated.**
+  Leaves the entry out when `update` rebuilds the bundle, and returns whether the
+  bundle had it — a name already gone is `Ok(false)`, not an error, so deleting is
+  idempotent. Takes effect at
+  `finish`; dropping the writer undoes it. Refuses an entry already written in
+  this session. 4 tests in `tests/writer.rs`
+- **`examples/update_bundle.rs`** (`make example-update`): opens a bundle that
+  already exists — making a small demo project first if the path has none — and,
+  through `BundleWriter::update`, copies a file from disk into one of its asset
+  folders, writes a produced one beside it, and replaces an existing entry,
+  then reads it all back and asserts the untouched entries are unchanged. Safe
+  to run repeatedly. `OUT=` points it at a bundle of your own
 - **`BundleWriter::update(bundle, &options)`: add to or replace entries in an
   existing bundle.** Entries written through it are added, or replace the entry
   of the same name; every other entry — directories, compressed, and encrypted

@@ -303,6 +303,8 @@ pub struct BundleWriter {
     /// The bundle being updated, whose other entries are carried over at
     /// [`finish`](BundleWriter::finish).
     source: Option<PathBuf>,
+    /// Entries of `source` that are not carried over.
+    removed: HashSet<String>,
 }
 
 impl BundleWriter {
@@ -374,6 +376,7 @@ impl BundleWriter {
             options: options.clone(),
             written: HashSet::new(),
             source,
+            removed: HashSet::new(),
         })
     }
 
@@ -407,6 +410,53 @@ impl BundleWriter {
         })
     }
 
+    /// Leaves `name` out of the bundle when it is finished, for a bundle being
+    /// [`update`](BundleWriter::update)d. Returns whether the bundle had it.
+    ///
+    /// A name that is not there is not an error: removing something already gone
+    /// is the same end state, and the answer is in the return value for a caller
+    /// that cares. Nothing happens to the bundle on disk until
+    /// [`finish`](BundleWriter::finish), so dropping the writer undoes it.
+    ///
+    /// ```no_run
+    /// use pfac::{BundleOptions, BundleWriter};
+    ///
+    /// let mut bundle = BundleWriter::update("project.pfac", &BundleOptions::stored())?;
+    /// if !bundle.remove("asset/audio/old.flac")? {
+    ///     println!("it was already gone");
+    /// }
+    /// bundle.finish()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`Error::BadName`] for a name that cannot be stored portably, or one
+    /// already written to this bundle (that entry is in the new bundle and
+    /// cannot be taken back out); [`Error::Zip`] if the bundle cannot be read.
+    pub fn remove(&mut self, name: &str) -> Result<bool> {
+        let name = names::normalize(name)?;
+
+        if self.written.contains(&name) {
+            return Err(Error::bad_name(name, "already written to this bundle"));
+        }
+
+        let existed = match &self.source {
+            Some(source) => {
+                let file = File::open(source).map_err(|error| Error::io(source, error))?;
+                let archive = ZipArchive::new(BufReader::new(file))
+                    .map_err(|error| Error::zip(source, "", error))?;
+                // A directory is stored as `name/`.
+                archive.file_names().any(|stored| stored.trim_end_matches('/') == name)
+            }
+            None => false,
+        };
+
+        self.removed.insert(name);
+
+        Ok(existed)
+    }
+
     /// Writes the index, flushes, and renames the bundle into place.
     ///
     /// # Errors
@@ -425,7 +475,8 @@ impl BundleWriter {
                     .map_err(|error| Error::zip(source, "", error))?;
 
                 // A directory is `name/`; an entry written here has no slash.
-                if self.written.contains(entry.name().trim_end_matches('/')) {
+                let stored = entry.name().trim_end_matches('/');
+                if self.written.contains(stored) || self.removed.contains(stored) {
                     continue;
                 }
 

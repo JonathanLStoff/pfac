@@ -37,7 +37,7 @@ v ?=
 PROFILE ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help build test check fmt clippy doc clean release example example-all example-export icon \
+.PHONY: help build test check fmt clippy doc clean release example example-all example-export example-update icon \
         require-cargo require-manifest require-version require-data
 
 # --- checks ---------------------------------------------------------------
@@ -113,6 +113,10 @@ example-all: require-manifest require-data
 ## example-export: write exports straight into bundle entries, then stream one back
 example-export: require-manifest
 	$(CARGO) run $(PROFILE) --example export_into_bundle -- $(OUT)
+
+## example-update: add a file to an asset folder of an existing bundle, replace another
+example-update: require-manifest require-data
+	$(CARGO) run $(PROFILE) --example update_bundle -- $(OUT)
 
 ## icon: show what registering a file-type icon would do (APPLY=1 to do it)
 icon: require-manifest require-data
@@ -230,6 +234,8 @@ help:
 	@echo ""
 	@echo "  'make example-export' writes exports into a bundle through"
 	@echo "  BundleWriter, with no file written first, and streams one back."
+	@echo "  'make example-update' adds to and replaces entries in a bundle that"
+	@echo "  already exists (make example-update OUT=my_project.pfac)."
 	@echo ""
 	@echo "  'make icon' prints what registering an icon for an extension would"
 	@echo "  write, and changes nothing. 'make icon APPLY=1' carries it out."

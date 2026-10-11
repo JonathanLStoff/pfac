@@ -125,7 +125,9 @@ discarded, so a failed export leaves nothing in the bundle; a name cannot be
 written twice.
 
 `make example-export` runs `examples/export_into_bundle.rs`, which writes two
-exports into a bundle and streams one back out of it.
+exports into a bundle and streams one back out of it. `make example-update` runs
+`examples/update_bundle.rs`, which adds a file to an asset folder of a bundle
+that already exists and replaces another entry in it.
 
 ## Passwords
 

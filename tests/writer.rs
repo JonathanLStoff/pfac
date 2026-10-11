@@ -264,3 +264,77 @@ fn an_update_keeps_directories_and_compressed_entries() {
     assert_eq!(bundle.read("text.txt").unwrap(), "hello ".repeat(1000).into_bytes());
     assert_eq!(bundle.read("new.txt").unwrap(), b"new");
 }
+
+#[test]
+fn an_entry_can_be_removed_from_a_bundle_being_updated() {
+    let temp = TempDir::new().unwrap();
+    let archive = temp.path().join("out.pfac");
+
+    let mut bundle = BundleWriter::create(&archive, &BundleOptions::stored()).unwrap();
+    for name in ["keep.bin", "asset/audio/old.flac"] {
+        let mut entry = bundle.entry(name).unwrap();
+        entry.write_all(b"x").unwrap();
+        entry.finish().unwrap();
+    }
+    bundle.finish().unwrap();
+
+    let mut bundle = BundleWriter::update(&archive, &BundleOptions::stored()).unwrap();
+    assert!(bundle.remove("asset/audio/old.flac").unwrap());
+    assert!(!bundle.remove("never/there.bin").unwrap(), "already gone is not an error");
+    bundle.finish().unwrap();
+
+    let bundle = Bundle::open(&archive).unwrap();
+    assert!(bundle.contains("keep.bin"));
+    assert!(!bundle.contains("asset/audio/old.flac"));
+}
+
+#[test]
+fn a_removal_that_is_never_finished_changes_nothing() {
+    let temp = TempDir::new().unwrap();
+    let archive = temp.path().join("out.pfac");
+
+    let mut bundle = BundleWriter::create(&archive, &BundleOptions::stored()).unwrap();
+    let mut entry = bundle.entry("a.bin").unwrap();
+    entry.write_all(b"x").unwrap();
+    entry.finish().unwrap();
+    bundle.finish().unwrap();
+
+    let mut bundle = BundleWriter::update(&archive, &BundleOptions::stored()).unwrap();
+    bundle.remove("a.bin").unwrap();
+    drop(bundle);
+
+    assert!(Bundle::open(&archive).unwrap().contains("a.bin"));
+}
+
+#[test]
+fn removing_and_rewriting_one_name_leaves_the_new_one() {
+    let temp = TempDir::new().unwrap();
+    let archive = temp.path().join("out.pfac");
+
+    let mut bundle = BundleWriter::create(&archive, &BundleOptions::stored()).unwrap();
+    let mut entry = bundle.entry("a.bin").unwrap();
+    entry.write_all(b"old").unwrap();
+    entry.finish().unwrap();
+    bundle.finish().unwrap();
+
+    let mut bundle = BundleWriter::update(&archive, &BundleOptions::stored()).unwrap();
+    bundle.remove("a.bin").unwrap();
+    let mut entry = bundle.entry("a.bin").unwrap();
+    entry.write_all(b"new").unwrap();
+    entry.finish().unwrap();
+    bundle.finish().unwrap();
+
+    assert_eq!(Bundle::open(&archive).unwrap().read("a.bin").unwrap(), b"new");
+}
+
+#[test]
+fn an_entry_already_written_cannot_be_removed() {
+    let temp = TempDir::new().unwrap();
+    let mut bundle =
+        BundleWriter::create(temp.path().join("out.pfac"), &BundleOptions::stored()).unwrap();
+    let mut entry = bundle.entry("a.bin").unwrap();
+    entry.write_all(b"x").unwrap();
+    entry.finish().unwrap();
+
+    assert!(matches!(bundle.remove("a.bin"), Err(Error::BadName { .. })));
+}
