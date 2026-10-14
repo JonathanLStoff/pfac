@@ -213,6 +213,43 @@ fn an_update_replaces_one_entry_and_carries_the_rest_over_untouched() {
 }
 
 #[test]
+fn a_bundle_can_be_updated_while_an_entry_is_being_streamed_from_it() {
+    // An app plays its assets straight out of the bundle and saves into it at
+    // the same time. On Windows, replacing a file someone has open was refused
+    // (os error 5) until the rename went through POSIX semantics.
+    let temp = TempDir::new().unwrap();
+    let archive = temp.path().join("out.pfac");
+    let asset = blob(50_000);
+
+    let mut bundle = BundleWriter::create(&archive, &BundleOptions::stored()).unwrap();
+    let mut entry = bundle.entry("asset.flac").unwrap();
+    entry.write_all(&asset).unwrap();
+    entry.finish().unwrap();
+    bundle.finish().unwrap();
+
+    let mut playing = Bundle::open(&archive).unwrap().stream("asset.flac").unwrap();
+
+    let mut bundle = BundleWriter::update(&archive, &BundleOptions::stored()).unwrap();
+    let mut entry = bundle.entry("core.planet").unwrap();
+    entry.write_all(b"saved").unwrap();
+    entry.finish().unwrap();
+    bundle.finish().unwrap();
+
+    // The open stream still reads the bundle it opened.
+    let mut heard = Vec::new();
+    playing.read_to_end(&mut heard).unwrap();
+    assert_eq!(heard, asset);
+
+    let mut bundle = Bundle::open(&archive).unwrap();
+    assert_eq!(bundle.read("core.planet").unwrap(), b"saved");
+    assert_eq!(bundle.read("asset.flac").unwrap(), asset);
+
+    // Published, so nothing of the temporary is left beside it.
+    let left: Vec<_> = std::fs::read_dir(temp.path()).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+    assert_eq!(left, ["out.pfac"]);
+}
+
+#[test]
 fn an_unfinished_update_leaves_the_original_as_it_was() {
     let temp = TempDir::new().unwrap();
     let archive = temp.path().join("out.pfac");

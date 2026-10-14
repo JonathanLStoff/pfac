@@ -501,11 +501,34 @@ impl BundleWriter {
             .sync_all()
             .map_err(|error| Error::io(&output_file, error))?;
 
-        temp.persist(&output_file)
-            .map_err(|error| Error::io(&output_file, error.error))?;
-
-        Ok(())
+        publish(temp, &output_file)
     }
+}
+
+/// Renames the finished `temp` over `output_file`.
+///
+/// `std::fs::rename`, not [`NamedTempFile::persist`]: on Windows `persist` is
+/// `MoveFileExW`, which refuses (os error 5, access denied) to replace a file
+/// that anything has open — and a bundle being updated is often open, by the
+/// readers streaming its entries. `std::fs::rename` uses POSIX semantics where
+/// Windows has them, as every other platform does: the bundle is replaced, and
+/// a reader that already had it open goes on reading the old one.
+fn publish(temp: NamedTempFile, output_file: &Path) -> Result<()> {
+    // `keep` closes the file and takes it out of tempfile's hands, so it is not
+    // deleted on drop, and on Windows clears the temporary attribute it was
+    // made with — or the published bundle would keep it.
+    let temp = temp
+        .into_temp_path()
+        .keep()
+        .map_err(|error| Error::io(output_file, error.error))?;
+
+    if let Err(error) = std::fs::rename(&temp, output_file) {
+        // Ours to clean up now that tempfile has let it go.
+        let _ = std::fs::remove_file(&temp);
+        return Err(Error::io(output_file, error));
+    }
+
+    Ok(())
 }
 
 /// One entry of a [`BundleWriter`], written to as a file would be.

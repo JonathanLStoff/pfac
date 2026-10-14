@@ -8,6 +8,14 @@ underneath it, so **Done** always holds exactly what is unreleased.
 
 **Done**
 
+- **Fix: on Windows, a bundle that is open could not be written over.**
+  `BundleWriter::finish` (so `create`, `update`, and `create_bundle` over an
+  existing file) published through `tempfile`'s `persist`, which is
+  `MoveFileExW` and refuses — os error 5, access denied — to replace a file
+  anything has open, such as a reader streaming one of the bundle's entries.
+  It now renames with `std::fs::rename`, which uses POSIX semantics where
+  Windows has them: the bundle is replaced, and an already-open reader goes on
+  reading the old one, as on every other platform. 1 test in `tests/writer.rs`
 - **`BundleWriter::remove(name)`: delete an entry from a bundle being updated.**
   Leaves the entry out when `update` rebuilds the bundle, and returns whether the
   bundle had it — a name already gone is `Ok(false)`, not an error, so deleting is
