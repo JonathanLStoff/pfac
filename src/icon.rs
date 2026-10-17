@@ -48,6 +48,14 @@
 //! three side by side and let [`icon_in`] choose, rather than writing a `cfg!`
 //! of your own.
 //!
+//! # Opening the file, not only drawing it
+//!
+//! An icon alone does not make a double-click do anything. [`FileTypeIcon::open_with`]
+//! names the program that opens the extension: on Windows the ProgID gets a
+//! `shell\open\command`, and on Linux a hidden `.desktop` entry is written and
+//! made the default for the MIME type with `xdg-mime`. macOS takes this from the
+//! application bundle's own `Info.plist` too, so it is ignored there.
+//!
 //! # macOS needs an application bundle
 //!
 //! Windows and Linux let a bare process claim an extension. macOS does not:
@@ -70,6 +78,8 @@ pub struct FileTypeIcon {
     app_id: String,
     mime_type: Option<String>,
     app_bundle: Option<PathBuf>,
+    open_with: Option<PathBuf>,
+    app_name: Option<String>,
 }
 
 impl FileTypeIcon {
@@ -108,6 +118,8 @@ impl FileTypeIcon {
             icon: icon.into(),
             mime_type: None,
             app_bundle: None,
+            open_with: None,
+            app_name: None,
         }
     }
 
@@ -130,6 +142,41 @@ impl FileTypeIcon {
     pub fn app_bundle(mut self, bundle: impl Into<PathBuf>) -> Self {
         self.app_bundle = Some(bundle.into());
         self
+    }
+
+    /// The program a double-click opens the file with: it is started with the
+    /// file's path as its one argument.
+    ///
+    /// Windows gets `HKCU\Software\Classes\<app_id>\shell\open\command`; Linux
+    /// gets `<app_id>.desktop` in `$XDG_DATA_HOME/applications`, hidden from menus,
+    /// set as the MIME type's default. Ignored on macOS, where the application
+    /// bundle declares what it opens. Without it, only the icon is registered.
+    pub fn open_with(mut self, program: impl Into<PathBuf>) -> Self {
+        self.open_with = Some(program.into());
+        self
+    }
+
+    /// What the desktop calls the program in [`open_with`](FileTypeIcon::open_with),
+    /// e.g. `"MyApp"`. Defaults to the program's file name without its extension.
+    pub fn app_name(mut self, name: impl Into<String>) -> Self {
+        self.app_name = Some(name.into());
+        self
+    }
+
+    /// The program the extension opens with, if one was given.
+    pub fn opener(&self) -> Option<&Path> {
+        self.open_with.as_deref()
+    }
+
+    /// The name the program is shown under.
+    pub fn resolved_app_name(&self) -> Option<String> {
+        let program = self.open_with.as_ref()?;
+        Some(self.app_name.clone().unwrap_or_else(|| {
+            program
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| self.app_id.clone())
+        }))
     }
 
     /// The extension, without its dot.
@@ -467,6 +514,15 @@ fn freedesktop_unregister(spec: &FileTypeIcon) -> Result<()> {
         .join(format!("{}.xml", spec.app_id));
     let _ = std::fs::remove_file(&package);
 
+    // Whether or not it was registered with `open_with`: gone is the end state.
+    let applications = data.join("applications");
+    let _ = std::fs::remove_file(applications.join(format!("{}.desktop", spec.app_id)));
+    let _ = run_step(&Step::Run {
+        program: "update-desktop-database".to_string(),
+        args: vec![applications.display().to_string()],
+        required: false,
+    });
+
     // Both candidate locations: which one was used depends on the format of the
     // icon that was registered, which we no longer have.
     for (directory, extension) in icon_targets(&data, spec) {
@@ -511,9 +567,7 @@ fn windows_plan(spec: &FileTypeIcon, icon: &Path) -> Plan {
     let extension_key = format!("{classes}\\.{}", spec.extension);
     let program_key = format!("{classes}\\{}", spec.app_id);
 
-    Plan {
-        platform: "windows",
-        steps: vec![
+    let mut steps = vec![
             // The extension points at a ProgID...
             Step::RegistryValue {
                 key: extension_key.clone(),
@@ -539,9 +593,35 @@ fn windows_plan(spec: &FileTypeIcon, icon: &Path) -> Plan {
                 // leaving it off makes some shells fall back to a blank page.
                 value: format!("{},0", icon.display()),
             },
-            Step::NotifyShell,
-        ],
+    ];
+
+    // A double-click runs the ProgID's `open` verb.
+    if let Some(program) = &spec.open_with {
+        steps.push(Step::RegistryValue {
+            key: format!("{program_key}\\shell"),
+            name: String::new(),
+            value: "open".to_string(),
+        });
+        steps.push(Step::RegistryValue {
+            key: format!("{program_key}\\shell\\open\\command"),
+            name: String::new(),
+            value: windows_open_command(program),
+        });
     }
+
+    steps.push(Step::NotifyShell);
+
+    Plan {
+        platform: "windows",
+        steps,
+    }
+}
+
+/// The command line Explorer runs: the program and the file, each quoted, as
+/// either may hold a space.
+#[cfg(any(windows, test))]
+fn windows_open_command(program: &Path) -> String {
+    format!("\"{}\" \"%1\"", program.display())
 }
 
 /// Tells Explorer that associations changed. Without it, already-open windows
@@ -614,9 +694,7 @@ fn freedesktop_plan(spec: &FileTypeIcon, icon: &Path) -> Result<Plan> {
         data.join("icons/hicolor/48x48/mimetypes")
     };
 
-    Ok(Plan {
-        platform: "freedesktop",
-        steps: vec![
+    let mut steps = vec![
             // The MIME database learns that *.ext is this type...
             Step::WriteFile {
                 path: data
@@ -647,8 +725,66 @@ fn freedesktop_plan(spec: &FileTypeIcon, icon: &Path) -> Result<Plan> {
                 // the cache — the theme is read from disk when it is missing.
                 required: false,
             },
-        ],
+    ];
+
+    // Opening is an application's business: a desktop entry that takes the MIME
+    // type, made its default. Hidden, so the menus are not given a second launcher
+    // beside whatever the application installed for itself.
+    if let (Some(program), Some(name)) = (&spec.open_with, spec.resolved_app_name()) {
+        let applications = data.join("applications");
+        let entry = format!("{}.desktop", spec.app_id);
+        steps.push(Step::WriteFile {
+            path: applications.join(&entry),
+            contents: desktop_entry(&name, program, &mime, &stem),
+        });
+        steps.push(Step::Run {
+            program: "update-desktop-database".to_string(),
+            args: vec![applications.display().to_string()],
+            // A cache; the desktop reads the entries when it is out of date.
+            required: false,
+        });
+        steps.push(Step::Run {
+            program: "xdg-mime".to_string(),
+            args: vec!["default".to_string(), entry, mime.clone()],
+            // xdg-utils is on every desktop install but not every minimal one,
+            // where the entry still offers itself under "Open with".
+            required: false,
+        });
+    }
+
+    Ok(Plan {
+        platform: "freedesktop",
+        steps,
     })
+}
+
+/// A desktop entry that opens one MIME type with `program`. `Exec` quotes the
+/// program by the Desktop Entry spec's rules, as a path may hold a space.
+#[cfg(any(all(unix, not(target_vendor = "apple")), test))]
+fn desktop_entry(name: &str, program: &Path, mime: &str, icon: &str) -> String {
+    let quoted: String = program
+        .display()
+        .to_string()
+        .chars()
+        .flat_map(|character| match character {
+            '"' | '`' | '$' | '\\' => vec!['\\', character],
+            other => vec![other],
+        })
+        .collect();
+
+    // Values are single lines: a newline in a caller's name would start a key.
+    let name = name.replace(['\n', '\r'], " ");
+
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name={name}\n\
+         Exec=\"{quoted}\" %f\n\
+         MimeType={mime};\n\
+         Icon={icon}\n\
+         NoDisplay=true\n\
+         Terminal=false\n"
+    )
 }
 
 /// The `shared-mime-info` package that teaches the database one glob.
@@ -997,6 +1133,46 @@ mod tests {
             assert!(formats.contains(&"png"));
             assert!(formats.contains(&"svg"));
         }
+    }
+
+    #[test]
+    fn open_with_names_the_program_and_defaults_its_name_to_the_file() {
+        let spec = FileTypeIcon::new("pfac", "icon.png", "com.myapp.bundle");
+        assert_eq!(spec.opener(), None);
+        assert_eq!(spec.resolved_app_name(), None);
+
+        let spec = spec.open_with("/opt/My App/myapp.exe");
+        assert_eq!(spec.opener(), Some(Path::new("/opt/My App/myapp.exe")));
+        assert_eq!(spec.resolved_app_name().as_deref(), Some("myapp"));
+
+        let spec = spec.app_name("My App");
+        assert_eq!(spec.resolved_app_name().as_deref(), Some("My App"));
+    }
+
+    #[test]
+    fn the_windows_command_quotes_the_program_and_the_file() {
+        assert_eq!(
+            windows_open_command(Path::new(r"C:\Program Files\My App\myapp.exe")),
+            r#""C:\Program Files\My App\myapp.exe" "%1""#
+        );
+    }
+
+    #[test]
+    fn the_desktop_entry_opens_the_type_and_quotes_the_program() {
+        let entry = desktop_entry(
+            "My App",
+            Path::new("/opt/my app/my$app"),
+            "application/x-pfac",
+            "application-x-pfac",
+        );
+
+        assert!(entry.starts_with("[Desktop Entry]\n"), "{entry}");
+        assert!(entry.contains("Exec=\"/opt/my app/my\\$app\" %f\n"), "{entry}");
+        assert!(entry.contains("MimeType=application/x-pfac;\n"), "{entry}");
+        assert!(entry.contains("NoDisplay=true\n"), "{entry}");
+
+        let entry = desktop_entry("Two\nLines", Path::new("/bin/a"), "application/x-pfac", "x");
+        assert!(entry.contains("Name=Two Lines\n"), "{entry}");
     }
 
     #[test]

@@ -221,6 +221,11 @@ is executed in `tests/sqlite.rs` rather than asserted.
 - [x] Re-exported at the crate root: `register_icon`, `unregister_icon`,
       `FileTypeIcon`, `icon_in`, documented in the crate docs and the README
 - [x] `unregister` for Windows and Linux
+- [x] `open_with(program)` / `app_name(name)`: a double-click opens the file.
+      Windows: `<app_id>\shell\open\command` = `"program" "%1"`. Linux: a
+      hidden `<app_id>.desktop` (`Exec="program" %f`, `MimeType=`), then
+      `update-desktop-database` and `xdg-mime default`, both optional.
+      `unregister` removes the entry. Ignored on macOS
 - [x] Compile-checked for `x86_64-pc-windows-msvc`,
       `x86_64-unknown-linux-gnu`, and `aarch64-apple-darwin`, clippy clean on all
       three — the Windows `SHChangeNotify` signature mismatch was caught this way

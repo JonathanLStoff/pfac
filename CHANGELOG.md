@@ -8,6 +8,18 @@ underneath it, so **Done** always holds exactly what is unreleased.
 
 **Done**
 
+- **`FileTypeIcon::open_with(program)`: a double-click opens the file.** An
+  icon alone only changes what a file looks like. With a program named, Windows
+  also gets the ProgID's `shell\open\command` (`"program" "%1"`) and Linux a
+  hidden `<app_id>.desktop` entry (`Exec="program" %f`, quoted by the Desktop
+  Entry rules) made the MIME type's default with `xdg-mime`, after
+  `update-desktop-database`; both commands are optional, as xdg-utils is
+  missing from minimal installs. `app_name` sets the program's display name
+  (default: its file name). `unregister` removes the entry. Ignored on macOS,
+  where the application bundle declares what it opens. `make icon OPEN_WITH=`
+  tries it. 3 tests in `src/icon.rs`; compile- and clippy-checked for Windows
+  and Linux, not applied on either
+
 - **Fix: on Windows, a bundle that is open could not be written over.**
   `BundleWriter::finish` (so `create`, `update`, and `create_bundle` over an
   existing file) published through `tempfile`'s `persist`, which is

@@ -207,6 +207,13 @@ extension would mean two applications that both handle `.pfac` writing the same
 key: the second would silently take over the first's icon, and `unregister_icon`
 would delete an association it never wrote.
 
+**An icon is not an opener.** On its own the association only changes what the
+file looks like. `FileTypeIcon::open_with(program)` also makes a double-click
+start `program` with the file's path: Windows gets the ProgID's
+`shell\open\command`, Linux a hidden `<app_id>.desktop` entry made the MIME
+type's default with `xdg-mime`. `app_name` sets what the desktop calls the
+program. macOS ignores both — the application bundle declares what it opens.
+
 **macOS needs an application bundle.** Windows and Linux let a bare process
 claim an extension; macOS takes document icons from an app bundle's
 `Info.plist`, and there is no per-extension icon API to call. So

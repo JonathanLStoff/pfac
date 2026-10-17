@@ -6,6 +6,7 @@
 //! make icon APPLY=1                  # actually register it
 //! make icon EXT=myapp ICON=a.ico     # a different extension and icon
 //! make icon APP_ID=com.you.myapp     # a different ProgID / MIME package name
+//! make icon OPEN_WITH=/path/to/app   # also open the extension with a program
 //! ```
 //!
 //! The icon defaults to whichever of `tests/data/pfac.{ico,icns,png}` this
@@ -71,6 +72,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     // extension, so there is nothing to register without one.
     if let Ok(bundle) = env::var("APP_BUNDLE") {
         spec = spec.app_bundle(bundle);
+    }
+
+    // Without a program, a double-click shows the icon and does nothing more.
+    if let Ok(program) = env::var("OPEN_WITH").map(|program| program.trim().to_string()) {
+        if !program.is_empty() {
+            spec = spec.open_with(program);
+        }
     }
 
     let plan = match icon::plan(&spec) {

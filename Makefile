@@ -28,6 +28,8 @@ ICON ?=
 # name on Linux. Only has to be unique.
 APP_ID ?=
 APP_BUNDLE ?=
+# The program a double-click opens the extension with (Windows and Linux).
+OPEN_WITH ?=
 # The version to cut: make release v=0.9.0
 v ?=
 
@@ -240,4 +242,4 @@ help:
 	@echo "  'make icon' prints what registering an icon for an extension would"
 	@echo "  write, and changes nothing. 'make icon APPLY=1' carries it out."
 	@echo "  It registers whichever of tests/data/pfac.{ico,icns,png} this"
-	@echo "  desktop reads; ICON=, EXT=, APP_ID=, and APP_BUNDLE= override."
+	@echo "  desktop reads; ICON=, EXT=, APP_ID=, APP_BUNDLE=, and OPEN_WITH= override."
