@@ -467,3 +467,71 @@ fn options_and_the_positional_form_agree() {
         two.read("art/cover.png").unwrap()
     );
 }
+
+/// How many files this process has open, where the system will say.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn open_files() -> usize {
+    let dir = if cfg!(target_os = "linux") {
+        "/proc/self/fd"
+    } else {
+        "/dev/fd"
+    };
+    fs::read_dir(dir).unwrap().count()
+}
+
+#[test]
+fn every_stream_of_a_bundle_shares_one_handle() {
+    let (temp, root) = tree();
+    let bundle_path = temp.path().join("shared.pfac");
+    create_bundle(&root, &bundle_path, false, None).unwrap();
+
+    let mut bundle = Bundle::open(&bundle_path).unwrap();
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let before = open_files();
+
+    let mut streams: Vec<_> = (0..200)
+        .map(|_| bundle.stream("music/take.flac").unwrap())
+        .collect();
+    streams.extend((0..200).map(|_| bundle.stream("art/cover.png").unwrap()));
+    let clones: Vec<_> = streams.iter().map(Clone::clone).collect();
+
+    // One handle for the lot, give or take whatever else the test harness opens.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    assert!(
+        open_files() <= before + 4,
+        "{} streams opened {} files",
+        streams.len() + clones.len(),
+        open_files() - before
+    );
+
+    // And each still reads its own entry, with the bundle itself gone.
+    drop(bundle);
+    let expected = blob(200_000);
+    let mut song = Vec::new();
+    streams[0].read_to_end(&mut song).unwrap();
+    assert_eq!(song, expected);
+    let mut cover = Vec::new();
+    streams[399].read_to_end(&mut cover).unwrap();
+    assert_eq!(cover, b"\x89PNG cover");
+    drop(clones);
+}
+
+#[test]
+fn locate_points_at_the_entry_in_the_file() {
+    let (temp, root) = tree();
+    let bundle_path = temp.path().join("located.pfac");
+    create_bundle(&root, &bundle_path, false, None).unwrap();
+
+    let mut bundle = Bundle::open(&bundle_path).unwrap();
+    let (start, len) = bundle.locate("art/cover.png").unwrap();
+
+    let file = fs::read(&bundle_path).unwrap();
+    assert_eq!(
+        &file[start as usize..(start + len) as usize],
+        b"\x89PNG cover"
+    );
+    assert!(matches!(
+        bundle.locate("nope"),
+        Err(Error::NoSuchEntry { .. })
+    ));
+}

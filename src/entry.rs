@@ -1,5 +1,5 @@
-//! A [`Read`] + [`Seek`] window onto one stored entry, backed by its own file
-//! handle.
+//! A [`Read`] + [`Seek`] window onto one stored entry, backed by a file handle
+//! it shares with the bundle's other streams.
 //!
 //! # Why not `ZipFile`
 //!
@@ -10,9 +10,19 @@
 //! is most of the point of putting them in one file.
 //!
 //! An uncompressed entry is a contiguous run of bytes in the bundle, so there is
-//! nothing to borrow: take its offset and length once, open a separate handle to
-//! the same file, and serve reads from that window. Three things fall out —
-//! [`Seek`], any number of concurrent streams, and [`Send`].
+//! nothing to borrow: take its offset and length once, and serve reads from that
+//! window of the file. Three things fall out — [`Seek`], any number of
+//! concurrent streams, and [`Send`].
+//!
+//! # One handle, however many streams
+//!
+//! Every stream a [`Bundle`](crate::Bundle) hands out reads through the same
+//! open file, and so does every [`Clone`] of a stream. Reads are positional
+//! (`pread` on Unix, `ReadFile` with an offset on Windows): they name the offset
+//! they want and never move a shared cursor, so streams on different threads do
+//! not get in each other's way. A bundle with a thousand entries streaming costs
+//! one file descriptor, not a thousand — which matters where the limit is low,
+//! as it is for an app on a phone.
 //!
 //! # What it is not
 //!
@@ -23,6 +33,7 @@
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
+use std::sync::Arc;
 
 /// A seekable stream over one uncompressed entry.
 ///
@@ -40,9 +51,13 @@ use std::io::{self, Read, Seek, SeekFrom};
 /// assert_eq!(&header, b"fLaC");
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[derive(Debug)]
+///
+/// A clone is a second, independent stream over the same entry: it starts where
+/// the original is, moves on its own, and opens nothing.
+#[derive(Clone, Debug)]
 pub struct EntryReader {
-    file: File,
+    /// The bundle, shared with every other stream out of it.
+    file: Arc<File>,
     /// Absolute offset of the entry's first data byte in the bundle.
     start: u64,
     /// Length of the entry. Stored entries are not compressed, so this is both
@@ -53,7 +68,7 @@ pub struct EntryReader {
 }
 
 impl EntryReader {
-    pub(crate) fn new(file: File, start: u64, len: u64) -> Self {
+    pub(crate) fn new(file: Arc<File>, start: u64, len: u64) -> Self {
         EntryReader {
             file,
             start,
@@ -93,16 +108,40 @@ impl Read for EntryReader {
         // bytes after it belong to the next entry, or to the central directory.
         let wanted = buffer.len().min(remaining as usize);
 
-        // Seek every time rather than trusting the handle's position. Nothing
-        // else holds this handle, but `read` is also reached through `Seek`, and
-        // one authoritative position is cheaper to reason about than two.
-        self.file.seek(SeekFrom::Start(self.start + self.pos))?;
-        let read = self.file.read(&mut buffer[..wanted])?;
+        // By offset, never through the handle's own cursor: the handle is
+        // shared with every other stream out of the bundle.
+        let read = read_at(&self.file, &mut buffer[..wanted], self.start + self.pos)?;
 
         self.pos += read as u64;
 
         Ok(read)
     }
+}
+
+/// Reads from `file` at `offset` without moving a cursor anything else shares.
+#[cfg(unix)]
+fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
+    std::os::unix::fs::FileExt::read_at(file, buffer, offset)
+}
+
+/// Reads from `file` at `offset`. `seek_read` does move the handle's cursor, but
+/// every read here names its own offset, so nothing depends on where it is left.
+#[cfg(windows)]
+fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_read(file, buffer, offset)
+}
+
+/// Where there is no positional read, the seek and the read are two calls on a
+/// cursor the bundle's streams share, so they are done under one lock.
+#[cfg(not(any(unix, windows)))]
+fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
+    static CURSOR: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _held = CURSOR
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut file = file;
+    file.seek(SeekFrom::Start(offset))?;
+    file.read(buffer)
 }
 
 impl Seek for EntryReader {
@@ -146,7 +185,7 @@ mod tests {
         file.write_all(suffix).unwrap();
         file.flush().unwrap();
 
-        let handle = File::open(file.path()).unwrap();
+        let handle = Arc::new(File::open(file.path()).unwrap());
         let reader = EntryReader::new(handle, prefix.len() as u64, body.len() as u64);
 
         (file, reader)
@@ -238,6 +277,48 @@ mod tests {
         assert_eq!(reader.remaining(), 6);
         reader.seek(SeekFrom::Start(99)).unwrap();
         assert_eq!(reader.remaining(), 0);
+    }
+
+    #[test]
+    fn a_clone_reads_on_its_own_from_where_the_original_was() {
+        let (_file, mut reader) = reader(b"PREFIX", b"0123456789", b"SUFFIX");
+        reader.seek(SeekFrom::Start(2)).unwrap();
+
+        let mut clone = reader.clone();
+        let mut two = [0_u8; 2];
+        clone.read_exact(&mut two).unwrap();
+        assert_eq!(&two, b"23");
+
+        // The original has not moved, and reads the same bytes.
+        reader.read_exact(&mut two).unwrap();
+        assert_eq!(&two, b"23");
+        clone.read_exact(&mut two).unwrap();
+        assert_eq!(&two, b"45");
+    }
+
+    #[test]
+    fn streams_sharing_a_handle_read_from_threads_at_once() {
+        let body: Vec<u8> = (0..200_000_u32).map(|i| (i % 251) as u8).collect();
+        let (_file, reader) = reader(b"PREFIX", &body, b"SUFFIX");
+
+        let threads: Vec<_> = (0..8_u64)
+            .map(|at| {
+                let (mut reader, body) = (reader.clone(), body.clone());
+                std::thread::spawn(move || {
+                    for pass in 0..200_u64 {
+                        let from = (at * 9_973 + pass * 613) % 190_000;
+                        reader.seek(SeekFrom::Start(from)).unwrap();
+                        let mut got = [0_u8; 512];
+                        reader.read_exact(&mut got).unwrap();
+                        assert_eq!(&got[..], &body[from as usize..from as usize + 512]);
+                    }
+                })
+            })
+            .collect();
+
+        for thread in threads {
+            thread.join().unwrap();
+        }
     }
 
     #[test]

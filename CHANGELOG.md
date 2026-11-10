@@ -8,6 +8,21 @@ underneath it, so **Done** always holds exactly what is unreleased.
 
 **Done**
 
+## Release 0.8.6
+
+- **Every stream out of a bundle shares one file handle.** `Bundle::stream`
+  opened a file of its own for each stream, so a project streaming a thousand
+  entries held a thousand descriptors: over the limit an app gets on a phone,
+  and near it on a desktop. The first `stream` now opens one handle and every
+  later one shares it. Reads are positional (`pread` on Unix, an offset read on
+  Windows), so streams on different threads never move a cursor another is
+  relying on. `EntryReader` is `Clone`: a clone is a second, independent stream
+  that opens nothing. A stream still outlives the `Bundle` it came from. Keep
+  the `Bundle` to get the benefit: one opened per entry shares nothing.
+  `Bundle::locate(name)` returns where a stored entry's bytes are (offset,
+  length), for a caller reading the file its own way. 2 tests in
+  `src/entry.rs`, 2 in `tests/bundle.rs`; compile-checked for Windows and iOS
+
 - **`FileTypeIcon::open_with(program)`: a double-click opens the file.** An
   icon alone only changes what a file looks like. With a program named, Windows
   also gets the ProgID's `shell\open\command` (`"program" "%1"`) and Linux a

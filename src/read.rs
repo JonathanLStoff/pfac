@@ -3,6 +3,7 @@
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use zip::{CompressionMethod, ZipArchive};
 
@@ -49,6 +50,9 @@ impl EntryInfo {
 pub struct Bundle {
     path: PathBuf,
     archive: ZipArchive<BufReader<File>>,
+    /// The one handle every stream out of this bundle reads through, opened by
+    /// the first [`stream`](Bundle::stream).
+    shared: Option<Arc<File>>,
     password: Option<Vec<u8>>,
     max_read: u64,
 }
@@ -72,6 +76,7 @@ impl Bundle {
         Ok(Bundle {
             path: path.to_path_buf(),
             archive,
+            shared: None,
             password,
             max_read: DEFAULT_MAX_READ,
         })
@@ -183,9 +188,14 @@ impl Bundle {
     /// buffer the caller reads into and nothing more.
     ///
     /// The returned [`EntryReader`] is [`Read`] + [`Seek`](std::io::Seek) +
-    /// [`Send`], has its own file handle, and does not borrow the bundle — so
-    /// several can be open at once, and one can stay open while other entries
-    /// are read.
+    /// [`Send`] + [`Clone`] and does not borrow the bundle — so several can be
+    /// open at once, and one can stay open while other entries are read, or
+    /// after the bundle itself is dropped.
+    ///
+    /// Every stream out of one `Bundle` reads through a single file handle,
+    /// opened by the first call and shared from then on: a thousand streams
+    /// cost one file descriptor. Keep the `Bundle` and call this again (or
+    /// clone a stream) rather than opening the bundle anew for each entry.
     ///
     /// ```no_run
     /// use std::io::{Read, Seek, SeekFrom};
@@ -215,6 +225,35 @@ impl Bundle {
     ///   authenticate only at the end, so a stream would hand out bytes that
     ///   have not been verified
     pub fn stream(&mut self, name: &str) -> Result<EntryReader> {
+        let (start, len) = self.locate(name)?;
+
+        // One handle for every stream. It is not the archive's own: that one
+        // sits inside a `BufReader` whose cursor the zip layer moves.
+        let file = match &self.shared {
+            Some(file) => Arc::clone(file),
+            None => {
+                let file =
+                    Arc::new(File::open(&self.path).map_err(|error| Error::io(&self.path, error))?);
+                self.shared = Some(Arc::clone(&file));
+                file
+            }
+        };
+
+        Ok(EntryReader::new(file, start, len))
+    }
+
+    /// Where a stored entry's bytes are in the bundle file: the offset of its
+    /// first byte, and its length.
+    ///
+    /// What [`stream`](Self::stream) reads from, for a caller that wants to
+    /// read the file its own way (memory-mapping it, say). The offsets hold for
+    /// the file as it is now; writing the bundle again moves them.
+    ///
+    /// # Errors
+    ///
+    /// As [`stream`](Self::stream): only a stored, unencrypted file has a run
+    /// of bytes to point at.
+    pub fn locate(&mut self, name: &str) -> Result<(u64, u64)> {
         let index = self.index_of(name)?;
 
         let (start, len) = {
@@ -260,11 +299,7 @@ impl Bundle {
             (start, entry.size())
         };
 
-        // Its own handle: this is what frees the stream from borrowing the
-        // archive, and what lets two of them exist at once.
-        let file = File::open(&self.path).map_err(|error| Error::io(&self.path, error))?;
-
-        Ok(EntryReader::new(file, start, len))
+        Ok((start, len))
     }
 
     /// Reads a whole entry into memory.
