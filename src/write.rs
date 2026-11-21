@@ -305,7 +305,14 @@ pub struct BundleWriter {
     source: Option<PathBuf>,
     /// Entries of `source` that are not carried over.
     removed: HashSet<String>,
+    /// Appending: the journal, locked for as long as the append runs, so [`recover`] (a reader
+    /// opening the bundle meanwhile) leaves it alone; and this process's one-append-at-a-time turn.
+    journal: Option<File>,
+    _turn: Option<std::sync::MutexGuard<'static, ()>>,
 }
+
+/// One append at a time in this process: two would each write after the same last entry.
+static APPENDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Where a [`BundleWriter`] writes: a new bundle beside the old one, renamed
 /// over it at the end, or (appending) the bundle itself.
@@ -368,11 +375,18 @@ fn journal_path(bundle: &Path) -> PathBuf {
 pub fn recover(bundle: impl AsRef<Path>) -> Result<bool> {
     let bundle = bundle.as_ref();
     let journal = journal_path(bundle);
-    let saved = match std::fs::read(&journal) {
-        Ok(saved) => saved,
+    let mut record = match std::fs::OpenOptions::new().read(true).write(true).open(&journal) {
+        Ok(record) => record,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(Error::io(&journal, error)),
+        // In use (being deleted by an append finishing, say): not one to undo.
+        Err(_) => return Ok(false),
     };
+    // Locked: an append is running now, not one cut short. Leave it be.
+    if record.try_lock().is_err() {
+        return Ok(false);
+    }
+    let mut saved = Vec::new();
+    record.read_to_end(&mut saved).map_err(|error| Error::io(&journal, error))?;
     // Journal: the bundle's length, where its index started, then the index's bytes.
     // Too short: the journal itself was cut off before the append began, so the bundle is as it was.
     if saved.len() >= 16 {
@@ -388,7 +402,9 @@ pub fn recover(bundle: impl AsRef<Path>) -> Result<bool> {
             file.sync_all().map_err(io)?;
         }
     }
+    // Removed while still locked and open, so no one can take it for one to undo in between.
     std::fs::remove_file(&journal).map_err(|error| Error::io(&journal, error))?;
+    drop(record);
     Ok(true)
 }
 
@@ -414,6 +430,7 @@ impl BundleWriter {
     /// [`Error::Zip`] if it is not a bundle.
     pub fn append(bundle: impl AsRef<Path>, options: &BundleOptions) -> Result<Self> {
         let bundle = bundle.as_ref();
+        let turn = APPENDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         recover(bundle)?;
         let io = |error| Error::io(bundle, error);
 
@@ -443,7 +460,9 @@ impl BundleWriter {
         saved.extend_from_slice(&length.to_le_bytes());
         saved.extend_from_slice(&start.to_le_bytes());
         saved.extend_from_slice(&tail);
-        let mut record = File::create(&journal).map_err(|error| Error::io(&journal, error))?;
+        // A new file, or another process is appending to this bundle now.
+        let mut record = std::fs::OpenOptions::new().write(true).create_new(true).open(&journal).map_err(|error| Error::io(&journal, error))?;
+        record.lock().map_err(|error| Error::io(&journal, error))?;
         record.write_all(&saved).map_err(|error| Error::io(&journal, error))?;
         record.sync_all().map_err(|error| Error::io(&journal, error))?;
 
@@ -457,6 +476,8 @@ impl BundleWriter {
             written: names,
             source: None,
             removed: HashSet::new(),
+            journal: Some(record),
+            _turn: Some(turn),
         })
     }
 
@@ -529,6 +550,8 @@ impl BundleWriter {
             written: HashSet::new(),
             source,
             removed: HashSet::new(),
+            journal: None,
+            _turn: None,
         })
     }
 
@@ -657,8 +680,12 @@ impl BundleWriter {
             Target::InPlace(mut file) => {
                 file.flush().map_err(|error| Error::io(&output_file, error))?;
                 file.sync_all().map_err(|error| Error::io(&output_file, error))?;
+                // Removed while still locked and open: a reader opening the bundle in between
+                // must never find it unlocked and undo this append.
                 let journal = journal_path(&output_file);
-                std::fs::remove_file(&journal).map_err(|error| Error::io(&journal, error))
+                let removed = std::fs::remove_file(&journal).map_err(|error| Error::io(&journal, error));
+                drop(self.journal.take());
+                removed
             }
         }
     }
