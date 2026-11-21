@@ -1,6 +1,14 @@
 # Changelog
 
 Finished work is moved out of `planning/TODO.md` and listed under **Done**
+below as it lands (see `.claude/CLAUDE.MD`).
+
+`make release v=x.y.z` empties **Done** into a new `## Release x.y.z` section
+underneath it, so **Done** always holds exactly what is unreleased.
+
+**Done**
+
+## Release 0.8.8
 
 - **A reader no longer undoes an append that is still running.** `Bundle::open`
   runs `recover`, and a bundle opened while another thread was appending to it
@@ -8,12 +16,6 @@ Finished work is moved out of `planning/TODO.md` and listed under **Done**
   losing what was being added. An append now holds a lock on its journal until
   it finishes (and removes it while still locked); `recover` leaves a locked
   journal alone. Appends in one process take turns.
-below as it lands (see `.claude/CLAUDE.MD`).
-
-`make release v=x.y.z` empties **Done** into a new `## Release x.y.z` section
-underneath it, so **Done** always holds exactly what is unreleased.
-
-**Done**
 
 ## Release 0.8.7
 
