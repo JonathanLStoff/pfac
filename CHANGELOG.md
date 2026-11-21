@@ -8,6 +8,17 @@ underneath it, so **Done** always holds exactly what is unreleased.
 
 **Done**
 
+## Release 0.8.7
+
+- **Append in place.** `BundleWriter::append(bundle, options)` adds entries to
+  an existing bundle after its last entry, with a new index after them, so
+  adding to a large bundle costs only what is added; `update` rewrites it all.
+  Crash-safe through `<bundle>.journal`, which holds the old index until the
+  append finishes: one cut short (a crash, a dropped writer) is undone by
+  `pfac::recover(bundle)`, which `append` and `Bundle::open` run first, and the
+  bundle reads byte for byte as it did. Only adds: a name already there is
+  refused.
+
 ## Release 0.8.6
 
 - **Every stream out of a bundle shares one file handle.** `Bundle::stream`

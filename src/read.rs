@@ -69,6 +69,8 @@ impl Bundle {
     }
 
     fn open_inner(path: &Path, password: Option<Vec<u8>>) -> Result<Self> {
+        // An append cut short is undone first. Best effort: a bundle on read-only media still opens.
+        let _ = crate::write::recover(path);
         let file = File::open(path).map_err(|error| Error::io(path, error))?;
         let archive =
             ZipArchive::new(BufReader::new(file)).map_err(|error| Error::zip(path, "", error))?;

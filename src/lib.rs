@@ -162,7 +162,7 @@ pub use icon::{FileTypeIcon, icon_in, register as register_icon, unregister as u
 pub use names::normalize as normalize_name;
 pub use read::{Bundle, DEFAULT_MAX_READ, EntryInfo};
 pub use write::{
-    BundleOptions, BundleWriter, DEFAULT_EXTENSION, EntryWriter, create_bundle, create_bundle_with,
+    BundleOptions, BundleWriter, DEFAULT_EXTENSION, EntryWriter, create_bundle, create_bundle_with, recover,
     with_default_extension,
 };
 

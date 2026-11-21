@@ -25,7 +25,7 @@ let cover = bundle.read("art/cover.png")?;
 
 ```toml
 [dependencies]
-pfac = "0.8.6"
+pfac = "0.8.7"
 ```
 
 ## The three functions

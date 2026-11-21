@@ -294,7 +294,7 @@ pub fn create_bundle_with(
 /// into place by [`finish`](BundleWriter::finish); dropping the writer without
 /// finishing leaves any previous bundle as it was and writes nothing.
 pub struct BundleWriter {
-    zip: ZipWriter<NamedTempFile>,
+    zip: ZipWriter<Target>,
     output: PathBuf,
     options: BundleOptions,
     /// Names already in the bundle, so a repeat fails when it is opened rather
@@ -307,7 +307,159 @@ pub struct BundleWriter {
     removed: HashSet<String>,
 }
 
+/// Where a [`BundleWriter`] writes: a new bundle beside the old one, renamed
+/// over it at the end, or (appending) the bundle itself.
+enum Target {
+    Temp(NamedTempFile),
+    InPlace(File),
+}
+
+impl Read for Target {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Target::Temp(file) => file.read(buf),
+            Target::InPlace(file) => file.read(buf),
+        }
+    }
+}
+
+impl Write for Target {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Target::Temp(file) => file.write(buf),
+            Target::InPlace(file) => file.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Target::Temp(file) => file.flush(),
+            Target::InPlace(file) => file.flush(),
+        }
+    }
+}
+
+impl Seek for Target {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        match self {
+            Target::Temp(file) => file.seek(pos),
+            Target::InPlace(file) => file.seek(pos),
+        }
+    }
+}
+
+/// The journal an append keeps beside `bundle` until it is done: what to put
+/// back if it is not.
+fn journal_path(bundle: &Path) -> PathBuf {
+    let mut name = bundle.as_os_str().to_owned();
+    name.push(".journal");
+    PathBuf::from(name)
+}
+
+/// Undoes an [`append`](BundleWriter::append) that never finished (a crash, a
+/// power cut): the bundle's old index goes back where it was and what was
+/// appended after it is cut off, so the bundle reads exactly as it did before.
+/// Returns whether there was one to undo. [`Bundle::open`](crate::Bundle::open)
+/// and `append` call it first.
+///
+/// # Errors
+///
+/// [`Error::Io`] if the journal or the bundle cannot be read or written.
+pub fn recover(bundle: impl AsRef<Path>) -> Result<bool> {
+    let bundle = bundle.as_ref();
+    let journal = journal_path(bundle);
+    let saved = match std::fs::read(&journal) {
+        Ok(saved) => saved,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(Error::io(&journal, error)),
+    };
+    // Journal: the bundle's length, where its index started, then the index's bytes.
+    // Too short: the journal itself was cut off before the append began, so the bundle is as it was.
+    if saved.len() >= 16 {
+        let length = u64::from_le_bytes(saved[..8].try_into().expect("eight bytes"));
+        let start = u64::from_le_bytes(saved[8..16].try_into().expect("eight bytes"));
+        let tail = &saved[16..];
+        if start + tail.len() as u64 == length {
+            let io = |error| Error::io(bundle, error);
+            let mut file = std::fs::OpenOptions::new().write(true).open(bundle).map_err(io)?;
+            file.seek(SeekFrom::Start(start)).map_err(io)?;
+            file.write_all(tail).map_err(io)?;
+            file.set_len(length).map_err(io)?;
+            file.sync_all().map_err(io)?;
+        }
+    }
+    std::fs::remove_file(&journal).map_err(|error| Error::io(&journal, error))?;
+    Ok(true)
+}
+
 impl BundleWriter {
+    /// Adds entries to the existing bundle at `bundle` in place: they are
+    /// written after its last entry, and a new index after them. Nothing
+    /// already in the bundle is copied, so adding to a large bundle costs only
+    /// what is added — where [`update`](BundleWriter::update) rewrites it all.
+    ///
+    /// Crash-safe through a journal beside the bundle (`<bundle>.journal`)
+    /// holding its old index: an append that does not
+    /// [`finish`](BundleWriter::finish) — dropped, or cut short by a crash — is
+    /// undone, the bundle reading as it did before, by [`recover`], which the
+    /// next `append` or [`Bundle::open`](crate::Bundle::open) runs.
+    ///
+    /// Only adds: a name already in the bundle is refused (use `update` to
+    /// replace or [`remove`](BundleWriter::remove) one). `options` apply to the
+    /// entries written here, as for `update`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] if the bundle or its journal cannot be read or written,
+    /// [`Error::Zip`] if it is not a bundle.
+    pub fn append(bundle: impl AsRef<Path>, options: &BundleOptions) -> Result<Self> {
+        let bundle = bundle.as_ref();
+        recover(bundle)?;
+        let io = |error| Error::io(bundle, error);
+
+        let mut file = std::fs::OpenOptions::new().read(true).write(true).open(bundle).map_err(io)?;
+        let length = file.metadata().map_err(io)?.len();
+        let (start, names) = {
+            let mut archive = ZipArchive::new(BufReader::new(&mut file)).map_err(|error| Error::zip(bundle, "", error))?;
+            let mut start = length;
+            for index in 0..archive.len() {
+                if let Ok(entry) = archive.by_index_raw(index) {
+                    start = start.min(entry.central_header_start());
+                }
+            }
+            // An empty bundle: its index is the end record alone, the last 22 bytes and any comment.
+            if archive.is_empty() {
+                start = length.saturating_sub(22 + archive.comment().len() as u64);
+            }
+            (start, archive.file_names().map(|name| name.trim_end_matches('/').to_string()).collect::<HashSet<_>>())
+        };
+
+        // The journal first, on disk, before a byte of the bundle changes.
+        let mut tail = Vec::with_capacity((length - start) as usize);
+        file.seek(SeekFrom::Start(start)).map_err(io)?;
+        (&mut file).take(length - start).read_to_end(&mut tail).map_err(io)?;
+        let journal = journal_path(bundle);
+        let mut saved = Vec::with_capacity(16 + tail.len());
+        saved.extend_from_slice(&length.to_le_bytes());
+        saved.extend_from_slice(&start.to_le_bytes());
+        saved.extend_from_slice(&tail);
+        let mut record = File::create(&journal).map_err(|error| Error::io(&journal, error))?;
+        record.write_all(&saved).map_err(|error| Error::io(&journal, error))?;
+        record.sync_all().map_err(|error| Error::io(&journal, error))?;
+
+        file.seek(SeekFrom::Start(0)).map_err(io)?;
+        let zip = ZipWriter::new_append(Target::InPlace(file)).map_err(|error| Error::zip(bundle, "", error))?;
+        Ok(BundleWriter {
+            zip,
+            output: bundle.to_path_buf(),
+            options: options.clone(),
+            // Its entries count as written: a repeat is refused when opened.
+            written: names,
+            source: None,
+            removed: HashSet::new(),
+        })
+    }
+
     /// Starts a bundle at `output_file`, which is not touched until
     /// [`finish`](BundleWriter::finish).
     ///
@@ -371,7 +523,7 @@ impl BundleWriter {
         };
 
         Ok(BundleWriter {
-            zip: ZipWriter::new(temp),
+            zip: ZipWriter::new(Target::Temp(temp)),
             output: output_file.to_path_buf(),
             options: options.clone(),
             written: HashSet::new(),
@@ -488,20 +640,27 @@ impl BundleWriter {
         }
 
         let output_file = self.output;
-        let mut temp = self
+        let target = self
             .zip
             .finish()
             .map_err(|error| Error::zip(&output_file, "", error))?;
 
         // Both buffers: the file's, then the kernel's. Skipping either means the
-        // rename can publish a bundle whose tail is not on disk yet.
-        temp.flush()
-            .map_err(|error| Error::io(&output_file, error))?;
-        temp.as_file()
-            .sync_all()
-            .map_err(|error| Error::io(&output_file, error))?;
-
-        publish(temp, &output_file)
+        // rename can publish a bundle whose tail is not on disk yet — or, in
+        // place, the journal can go while the new index is not on disk.
+        match target {
+            Target::Temp(mut temp) => {
+                temp.flush().map_err(|error| Error::io(&output_file, error))?;
+                temp.as_file().sync_all().map_err(|error| Error::io(&output_file, error))?;
+                publish(temp, &output_file)
+            }
+            Target::InPlace(mut file) => {
+                file.flush().map_err(|error| Error::io(&output_file, error))?;
+                file.sync_all().map_err(|error| Error::io(&output_file, error))?;
+                let journal = journal_path(&output_file);
+                std::fs::remove_file(&journal).map_err(|error| Error::io(&journal, error))
+            }
+        }
     }
 }
 
