@@ -308,11 +308,35 @@ pub struct BundleWriter {
     /// Appending: the journal, locked for as long as the append runs, so [`recover`] (a reader
     /// opening the bundle meanwhile) leaves it alone; and this process's one-append-at-a-time turn.
     journal: Option<File>,
-    _turn: Option<std::sync::MutexGuard<'static, ()>>,
+    _turn: Option<Turn>,
 }
 
-/// One append at a time in this process: two would each write after the same last entry.
-static APPENDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// One append at a time in this process: two would each write after the same last entry. A flag
+/// and a condvar rather than a held `MutexGuard`, so the writer stays `Send`.
+static APPENDING: (std::sync::Mutex<bool>, std::sync::Condvar) = (std::sync::Mutex::new(false), std::sync::Condvar::new());
+
+/// This process's turn to append, given back when dropped.
+struct Turn;
+
+impl Turn {
+    fn take() -> Self {
+        let (busy, freed) = &APPENDING;
+        let mut busy = busy.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *busy {
+            busy = freed.wait(busy).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        *busy = true;
+        Turn
+    }
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        let (busy, freed) = &APPENDING;
+        *busy.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+        freed.notify_one();
+    }
+}
 
 /// Where a [`BundleWriter`] writes: a new bundle beside the old one, renamed
 /// over it at the end, or (appending) the bundle itself.
@@ -430,7 +454,7 @@ impl BundleWriter {
     /// [`Error::Zip`] if it is not a bundle.
     pub fn append(bundle: impl AsRef<Path>, options: &BundleOptions) -> Result<Self> {
         let bundle = bundle.as_ref();
-        let turn = APPENDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let turn = Turn::take();
         recover(bundle)?;
         let io = |error| Error::io(bundle, error);
 
@@ -798,3 +822,9 @@ impl Seek for EntryWriter<'_> {
         self.spool.seek(pos)
     }
 }
+
+// A writer goes to whichever thread does the work (an encoder's).
+const _: fn() = || {
+    fn send<T: Send>() {}
+    send::<BundleWriter>();
+};

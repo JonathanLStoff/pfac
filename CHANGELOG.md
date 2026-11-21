@@ -8,6 +8,12 @@ underneath it, so **Done** always holds exactly what is unreleased.
 
 **Done**
 
+## Release 0.8.9
+
+- **`BundleWriter` is `Send` again.** 0.8.8 kept this process's turn to append
+  as a `MutexGuard`, which cannot cross threads, so a writer handed to an
+  encoder's thread no longer compiled. The turn is now a flag and a condvar.
+
 ## Release 0.8.8
 
 - **A reader no longer undoes an append that is still running.** `Bundle::open`
